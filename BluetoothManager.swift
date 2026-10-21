@@ -26,21 +26,22 @@ struct PairedDevice: Identifiable, Hashable {
 struct EqPresetItem: Identifiable, Hashable, Codable {
     var id = UUID()
     let name: String
-    let gains: [Double] // 5 bands: 50Hz, 250Hz, 800Hz, 3kHz, 8kHz
+    let gains: [Double]
 }
 
 class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDelegate {
     @Published var isConnected = false
+    @Published var isConnecting = false
     @Published var deviceName = "ACCENTUM Plus"
     @Published var batteryLevel: Int? = nil
     
     // MARK: - Noise Control State
     @Published var noiseMode: NoiseMode = .custom
-    @Published var ancSliderValue: Double = 50.0 // 0 = 100% ANC | 50 = Neutral | 100 = 100% Transparency
+    @Published var ancSliderValue: Double = 50.0
     @Published var isAntiWindOn: Bool = false
     @Published var antiWindSetting: AntiWindSetting = .max
     @Published var isPhoneCallTransparencyOn: Bool = false
-    @Published var phoneCallTransparencyLevel: Double = 3.0 // 1 (Low) to 5 (High) Sidetone
+    @Published var phoneCallTransparencyLevel: Double = 3.0
     @Published var isAutoPauseTransparencyOn: Bool = true
     
     // MARK: - Connection Management (Multipoint)
@@ -49,7 +50,7 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
     @Published var ownDeviceIndex: Int = 0
     private var lastDisconnectedDeviceId: Int? = nil
     
-    // MARK: - My Sound & Equalizer State (50Hz, 250Hz, 800Hz, 3kHz, 8kHz)
+    // MARK: - My Sound & Equalizer State
     @Published var eqGains: [Double] = [0.0, 0.0, 0.0, 0.0, 0.0]
     @Published var selectedPresetName: String = "Wide Airy"
     @Published var isBassBoostOn: Bool = false
@@ -81,13 +82,18 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
     private var sliderDebounceTimer: Timer?
     private var eqDebounceTimer: Timer?
     private var batteryPollTimer: Timer?
+    private var autoReconnectTimer: Timer?
     
     override init() {
         super.init()
         loadPresets()
+        // Auto-connect immediately on launch (eliminates extra click)
+        connectToAccentumPlus()
+        startAutoReconnectMonitor()
     }
     
     func connectToAccentumPlus() {
+        guard !isConnected else { return }
         guard let paired = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] else { return }
         guard let accentum = paired.first(where: {
             $0.name?.localizedCaseInsensitiveContains("ACCENTUM Plus") == true
@@ -97,13 +103,31 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
         }
         
         deviceName = accentum.name ?? "ACCENTUM Plus"
+        isConnecting = true
         accentum.openRFCOMMChannelSync(&rfcommChannel, withChannelID: 1, delegate: self)
         
         if rfcommChannel != nil {
-            DispatchQueue.main.async { self.isConnected = true }
+            DispatchQueue.main.async {
+                self.isConnected = true
+                self.isConnecting = false
+            }
             registerNotifications()
             readInitialState()
             startPeriodicBatteryPoll()
+        } else {
+            DispatchQueue.main.async {
+                self.isConnecting = false
+            }
+        }
+    }
+    
+    private func startAutoReconnectMonitor() {
+        autoReconnectTimer?.invalidate()
+        autoReconnectTimer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            if !self.isConnected {
+                self.connectToAccentumPlus()
+            }
         }
     }
     
@@ -137,13 +161,13 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
         
         switch mode {
         case .adaptive:
-            send(command: 0x1804, payload: [0x00]) // Transparency Off
-            send(command: 0x1A04, payload: [0x01]) // ANC On
+            send(command: 0x1804, payload: [0x00])
+            send(command: 0x1A04, payload: [0x01])
             send(command: 0x1A00, payload: [0x01, windVal, 0x02, 0x00, 0x03, 0x01])
             send(command: 0x1A00, payload: [0x03, 0x01])
             
         case .custom:
-            send(command: 0x1A04, payload: [0x01]) // ANC On
+            send(command: 0x1A04, payload: [0x01])
             send(command: 0x1A00, payload: [0x01, windVal, 0x02, 0x00, 0x03, 0x00])
             send(command: 0x1A00, payload: [0x03, 0x00])
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
@@ -152,8 +176,8 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
             }
             
         case .off:
-            send(command: 0x1A04, payload: [0x00]) // ANC Off
-            send(command: 0x1804, payload: [0x00]) // Transparency Off
+            send(command: 0x1A04, payload: [0x00])
+            send(command: 0x1804, payload: [0x00])
         }
     }
     
@@ -195,20 +219,18 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
         send(command: 0x1800, payload: [on ? 0x01 : 0x00])
     }
     
-    // MARK: - Connection Management Actions (Multipoint)
+    // MARK: - Connection Management Actions
     func setMultipointEnabled(_ on: Bool) {
         self.isMultipointEnabled = on
         UserDefaults.standard.set(on, forKey: "isMultipointEnabled")
         send(command: 0x1408, payload: [on ? 0x02 : 0x01])
         
         if !on {
-            // Disconnect other paired devices so only This Mac stays connected
             for device in pairedDevices where !device.isThisDevice && device.isConnected {
                 lastDisconnectedDeviceId = device.id
                 send(command: 0x1403, payload: [UInt8(device.id)])
             }
         } else {
-            // Turning back ON: automatically reconnect the remembered secondary device
             if let targetId = lastDisconnectedDeviceId {
                 send(command: 0x1402, payload: [UInt8(targetId)])
             } else if let secondary = pairedDevices.first(where: { !$0.isThisDevice && !$0.isConnected }) {
@@ -223,9 +245,9 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
     
     func toggleDeviceConnection(_ device: PairedDevice) {
         if device.isConnected {
-            send(command: 0x1403, payload: [UInt8(device.id)]) // Disconnect
+            send(command: 0x1403, payload: [UInt8(device.id)])
         } else {
-            send(command: 0x1402, payload: [UInt8(device.id)]) // Connect
+            send(command: 0x1402, payload: [UInt8(device.id)])
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
             self.refreshPairedDevices()
@@ -233,9 +255,7 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
     }
     
     func removeDevice(_ device: PairedDevice) {
-        withAnimation {
-            self.pairedDevices.removeAll(where: { $0.id == device.id })
-        }
+        self.pairedDevices.removeAll(where: { $0.id == device.id })
         if device.isConnected {
             send(command: 0x1403, payload: [UInt8(device.id)])
         }
@@ -246,8 +266,8 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
     }
     
     func refreshPairedDevices() {
-        send(command: 0x1407) // Own index
-        send(command: 0x1400) // Device count
+        send(command: 0x1407)
+        send(command: 0x1400)
     }
     
     // MARK: - Graphic EQ & Presets Actions
@@ -282,6 +302,7 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
     
     func saveCustomPreset(name: String) {
         let newPreset = EqPresetItem(name: name, gains: eqGains)
+        customPresets.removeAll(where: { $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame })
         customPresets.append(newPreset)
         selectedPresetName = name
         savePresets()
@@ -357,37 +378,38 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
         send(command: 0x0600, payload: [0x00, UInt8((seconds >> 8) & 0xFF), UInt8(seconds & 0xFF)])
     }
     
-    // MARK: - Notifications & Query
+    // MARK: - Query & Registration
     private func registerNotifications() {
-        send(command: 0x0007, payload: [0x03]) // Battery
-        send(command: 0x0007, payload: [0x0D]) // ANC
-        send(command: 0x0007, payload: [0x0C]) // Transparency
-        send(command: 0x0007, payload: [0x08]) // EQ
-        send(command: 0x0007, payload: [0x0A]) // Multipoint
-        send(command: 0x0007, payload: [0x0B]) // Touch Lock
-        send(command: 0x0007, payload: [0x04]) // Generic Audio
-        send(command: 0x0007, payload: [0x02]) // Device State
+        send(command: 0x0007, payload: [0x03])
+        send(command: 0x0007, payload: [0x0D])
+        send(command: 0x0007, payload: [0x0C])
+        send(command: 0x0007, payload: [0x08])
+        send(command: 0x0007, payload: [0x0A])
+        send(command: 0x0007, payload: [0x0B])
+        send(command: 0x0007, payload: [0x04])
+        send(command: 0x0007, payload: [0x02])
     }
     
     private func readInitialState() {
         let commands: [(UInt16, [UInt8])] = [
-            (0x0603, []),           // Battery
-            (0x1A05, []),           // ANC Enabled
-            (0x1A01, []),           // ANC Modes
-            (0x1A03, []),           // ANC Level
-            (0x1801, []),           // Auto-pause
-            (0x0806, []),           // Sidetone
-            (0x1003, [0x00]),       // EQ Gains
-            (0x1009, []),           // Bass boost
-            (0x0804, []),           // Sound mode
-            (0x1407, []),           // Own index
-            (0x1400, []),           // Device count
-            (0x080D, []),           // Smart pause
-            (0x1607, []),           // Touch lock
-            (0x0401, []),           // On-head
-            (0x080B, []),           // Auto answer
-            (0x0815, []),           // Comfort call
-            (0x0601, [0x00])        // Auto power off
+            (0x0603, []),
+            (0x1A05, []),
+            (0x1A01, []),
+            (0x1A03, []),
+            (0x1801, []),
+            (0x0806, []),
+            (0x1003, [0x00]),
+            (0x1009, []),
+            (0x0804, []),
+            (0x1409, []),
+            (0x1407, []),
+            (0x1400, []),
+            (0x080D, []),
+            (0x1607, []),
+            (0x0401, []),
+            (0x080B, []),
+            (0x0815, []),
+            (0x0601, [0x00])
         ]
         
         for (i, item) in commands.enumerated() {
@@ -440,7 +462,7 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
             case 0x0703, 0x0683:
                 if let b = payload.first { self.batteryLevel = Int(b) }
                 
-            case 0x1B01, 0x1A81: // Mode table
+            case 0x1B01, 0x1A81:
                 var i = 0
                 while i + 1 < payload.count {
                     let modeId = payload[i]
@@ -465,21 +487,21 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
             case 0x1901:
                 if let val = payload.first { self.isAutoPauseTransparencyOn = (val == 1) }
                 
-            case 0x0906: // Sidetone
+            case 0x0906:
                 if let s = payload.first {
                     self.isPhoneCallTransparencyOn = (s > 0)
                     if s > 0 { self.phoneCallTransparencyLevel = Double(min(5, max(1, s))) }
                 }
                 
-            case 0x1103: // EQ All Gains
+            case 0x1103:
                 if payload.count >= 5 {
                     self.eqGains = (0..<5).map { Double(Int8(bitPattern: payload[$0])) / 10.0 }
                 }
                 
-            case 0x1109, 0x1089: // Bass Boost
+            case 0x1109, 0x1089:
                 if let val = payload.first { self.isBassBoostOn = (val == 1) }
                 
-            case 0x0904, 0x0884: // Sound Mode
+            case 0x0904, 0x0884:
                 if payload.count >= 2 {
                     let mode = payload[1]
                     self.isSpeechClarityOn = (mode == 2)
@@ -487,13 +509,12 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
                 }
                 
             case 0x1509:
-                // Hardware capability reports 2, do not overwrite user preference
                 break
                 
             case 0x1507:
                 if let own = payload.first { self.ownDeviceIndex = Int(own) }
                 
-            case 0x1500: // Device count
+            case 0x1500:
                 if payload.count >= 2 {
                     let count = (Int(payload[0]) << 8) | Int(payload[1])
                     for idx in 0..<count {
@@ -503,7 +524,7 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
                     }
                 }
                 
-            case 0x1501: // Device info: [index, prio, status, name...]
+            case 0x1501:
                 if payload.count >= 4 {
                     let idx = Int(payload[0])
                     let isConn = (payload[2] != 0)
@@ -511,7 +532,6 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
                     let rawName = String(bytes: nameBytes, encoding: .utf8) ?? ""
                     let cleanedName = rawName.trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters))
                     
-                    // Filter out empty or deleted slots completely
                     if cleanedName.count >= 2 {
                         let item = PairedDevice(id: idx, name: cleanedName, isConnected: isConn, isThisDevice: idx == self.ownDeviceIndex)
                         if let existing = self.pairedDevices.firstIndex(where: { $0.id == idx }) {
@@ -524,7 +544,7 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
                     }
                 }
                 
-            case 0x1584: // Peer status changed: [index, status]
+            case 0x1584:
                 if payload.count >= 2 {
                     let idx = Int(payload[0])
                     let isConn = (payload[1] != 0)
