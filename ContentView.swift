@@ -1,10 +1,3 @@
-//
-//  Untitled.swift
-//  MyApp
-//
-//  Created by Aanay Dwivedi on 21/10/26.
-//
-
 import SwiftUI
 
 struct ContentView: View {
@@ -44,38 +37,43 @@ struct ContentView: View {
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
+                // Integrated single-layer status pill matching macOS HIG
                 HStack(spacing: 8) {
                     if btManager.isConnected {
-                        if let battery = btManager.batteryLevel {
-                            HStack(spacing: 4) {
-                                Image(systemName: batteryIcon(for: battery))
-                                    .foregroundColor(batteryColor(for: battery))
-                                Text("\(battery)%")
-                                    .font(.callout.monospacedDigit())
-                                    .foregroundColor(.secondary)
-                            }
+                        // Battery indicator
+                        HStack(spacing: 4) {
+                            Image(systemName: batteryIcon(for: btManager.batteryLevel ?? 100))
+                                .foregroundColor(batteryColor(for: btManager.batteryLevel ?? 100))
+                            Text(btManager.batteryLevel != nil ? "\(btManager.batteryLevel!)%" : "--%")
+                                .font(.system(.body, design: .rounded).monospacedDigit())
+                                .foregroundColor(.primary)
                         }
                         
-                        Circle()
-                            .fill(Color.green)
-                            .frame(width: 7, height: 7)
+                        Divider()
+                            .frame(height: 12)
                         
-                        Text("Connected")
-                            .font(.callout)
-                            .foregroundColor(.secondary)
+                        // Status indicator
+                        HStack(spacing: 5) {
+                            Circle()
+                                .fill(Color.green)
+                                .frame(width: 8, height: 8)
+                            Text("Connected")
+                                .font(.system(.body, design: .rounded))
+                                .foregroundColor(.primary)
+                        }
                     } else {
-                        Circle()
-                            .fill(Color.secondary)
-                            .frame(width: 7, height: 7)
-                        Text("Disconnected")
-                            .font(.callout)
-                            .foregroundColor(.secondary)
+                        HStack(spacing: 5) {
+                            Circle()
+                                .fill(Color.secondary)
+                                .frame(width: 8, height: 8)
+                            Text("Disconnected")
+                                .font(.system(.body, design: .rounded))
+                                .foregroundColor(.secondary)
+                        }
                     }
                 }
                 .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(Color(NSColor.controlBackgroundColor))
-                .clipShape(Capsule())
+                .padding(.vertical, 4)
             }
         }
         .frame(minWidth: 620, minHeight: 460)

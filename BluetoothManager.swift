@@ -1,11 +1,3 @@
-//
-//  BluetoothManager.swift
-//  MyApp
-//
-//  Created by Aanay Dwivedi on 21/10/26.
-//
-
-
 import Foundation
 import IOBluetooth
 import Combine
@@ -29,7 +21,7 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
     @Published var isAncEnabled = true
     @Published var isTransparencyOn = false
     @Published var isAdaptiveAnc = false
-    @Published var ancStrength: Double = 100.0          // 0 to 100% (100 = strongest ANC)
+    @Published var ancStrength: Double = 100.0          // 0 to 100% (100 = max noise cancellation)
     @Published var transparencyLevel: Double = 100.0    // 0 to 100% (ambient volume)
     
     // Behavior State
@@ -43,11 +35,18 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
     private var rfcommChannel: IOBluetoothRFCOMMChannel?
     let vendorSennheiser: UInt16 = 0x0495
     
+    // Streaming RX buffer for reassembling fragmented or concatenated packets
+    private var rxBuffer = [UInt8]()
+    
+    // Debounce timer for slider gestures to avoid flooding Bluetooth
+    private var ancDebounceTimer: Timer?
+    private var batteryPollTimer: Timer?
+    
     func connectToAccentumPlus() {
         guard let pairedDevices = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] else { return }
         
         guard let accentum = pairedDevices.first(where: {
-            ($0.name?.contains("ACCENTUM Plus") == true) || ($0.name?.contains("Accentum Plus") == true)
+            ($0.name?.localizedCaseInsensitiveContains("ACCENTUM Plus") == true)
         }) else {
             deviceName = "ACCENTUM Plus not found"
             return
@@ -64,18 +63,20 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
             }
             registerNotifications()
             readInitialState()
+            startPeriodicBatteryPoll()
         }
     }
     
     func rfcommChannelData(_ rfcommChannel: IOBluetoothRFCOMMChannel!, data dataPointer: UnsafeMutableRawPointer!, length dataLength: Int) {
         let buffer = UnsafeBufferPointer(start: dataPointer.assumingMemoryBound(to: UInt8.self), count: dataLength)
-        handleIncomingData(Array(buffer))
+        parseIncomingStream(Array(buffer))
     }
     
     func rfcommChannelClosed(_ rfcommChannel: IOBluetoothRFCOMMChannel!) {
         DispatchQueue.main.async {
             self.isConnected = false
             self.batteryLevel = nil
+            self.batteryPollTimer?.invalidate()
         }
     }
     
@@ -97,10 +98,19 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
             self.isTransparencyOn = false
             self.isAncEnabled = true
             self.isAdaptiveAnc = false
+            
             send(command: 0x1804, payload: [0x00])                         // Transparency Off
             send(command: 0x1A04, payload: [0x01])                         // ANC On
-            send(command: 0x1A00, payload: [0x03, 0x00])                   // Adaptive Off
-            setAncStrength(Int(ancStrength))
+            
+            // Set 6-byte ANC mode table: [Anti-wind: Off (0), Comfort: Off (0), Adaptive: Off (0)]
+            // Turning Adaptive and Anti-Wind off unlocks manual ANC control via 0x1A02
+            send(command: 0x1A00, payload: [0x01, 0x00, 0x02, 0x00, 0x03, 0x00])
+            
+            // Apply current slider level after table initialization
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                let hardwareLevel = UInt8(clamping: 100 - Int(self.ancStrength))
+                self.send(command: 0x1A02, payload: [hardwareLevel])
+            }
             
         case .adaptive:
             self.isTransparencyOn = false
@@ -108,12 +118,12 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
             self.isAdaptiveAnc = true
             send(command: 0x1804, payload: [0x00])                         // Transparency Off
             send(command: 0x1A04, payload: [0x01])                         // ANC On
-            send(command: 0x1A00, payload: [0x03, 0x01])                   // Adaptive On
+            send(command: 0x1A00, payload: [0x01, 0x01, 0x02, 0x00, 0x03, 0x01]) // Adaptive On
             
         case .transparency:
             self.isTransparencyOn = true
             self.isAncEnabled = true
-            send(command: 0x1A04, payload: [0x01])                         // ANC must be enabled
+            send(command: 0x1A04, payload: [0x01])                         // ANC Enabled
             send(command: 0x1804, payload: [0x01])                         // Transparency On
             setTransparencyLevel(Int(transparencyLevel))
             
@@ -131,20 +141,24 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
     
     func setAncStrength(_ strength: Int) {
         self.ancStrength = Double(strength)
-        // Ensure Adaptive mode is disabled so the hardware level register applies
-        send(command: 0x1A00, payload: [0x03, 0x00])
-        // 0x1A02 expects inverted level: 0 = Max ANC, 100 = Min ANC
-        let hardwareLevel = UInt8(clamping: 100 - strength)
-        send(command: 0x1A02, payload: [hardwareLevel])
+        
+        // Debounce to avoid flooding the Bluetooth link while dragging
+        ancDebounceTimer?.invalidate()
+        ancDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.04, repeats: false) { [weak self] _ in
+            guard let self = self else { return }
+            // 0x1A02: 0 = Max ANC, 100 = Min ANC
+            let hardwareLevel = UInt8(clamping: 100 - strength)
+            self.send(command: 0x1A02, payload: [hardwareLevel])
+        }
     }
     
     func setTransparencyLevel(_ level: Int) {
         self.transparencyLevel = Double(level)
         let clamped = UInt8(clamping: level)
-        send(command: 0x1802, payload: [clamped]) // 0x1802 controls transparency ambient volume
+        send(command: 0x1802, payload: [clamped])
     }
     
-    // MARK: - Behavior Actions (Immediate Optimistic Updates)
+    // MARK: - Behavior Actions
     func setSmartPause(_ on: Bool) {
         self.isSmartPauseOn = on
         send(command: 0x080C, payload: [on ? 1 : 0])
@@ -152,8 +166,7 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
     
     func setTouchControls(_ on: Bool) {
         self.isTouchControlOn = on
-        // Touch lock is inverted on Sennheiser hardware: 0 = active, 1 = locked
-        send(command: 0x1606, payload: [on ? 0 : 1])
+        send(command: 0x1606, payload: [on ? 0 : 1]) // 0 = active, 1 = locked
     }
     
     func setOnHeadDetection(_ on: Bool) {
@@ -179,37 +192,90 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
     
     // MARK: - Initial State & Subscriptions
     private func registerNotifications() {
-        send(command: 0x0007, payload: [0x03]) // Battery (Feature 3)
-        send(command: 0x0007, payload: [0x0D]) // ANC (Feature 13)
-        send(command: 0x0007, payload: [0x0C]) // Transparent Hearing (Feature 12)
-        send(command: 0x0007, payload: [0x0B]) // MMI / Touch Lock (Feature 11)
-        send(command: 0x0007, payload: [0x02]) // Device Wear State (Feature 2)
+        send(command: 0x0007, payload: [0x03]) // Battery
+        send(command: 0x0007, payload: [0x0D]) // ANC
+        send(command: 0x0007, payload: [0x0C]) // Transparent Hearing
+        send(command: 0x0007, payload: [0x0B]) // MMI / Touch
+        send(command: 0x0007, payload: [0x02]) // Device State
     }
     
     private func readInitialState() {
-        send(command: 0x0603)                   // Battery
-        send(command: 0x1A05)                   // ANC Enabled
-        send(command: 0x1A01)                   // ANC Mode table
-        send(command: 0x1A03)                   // ANC Level
-        send(command: 0x1805)                   // Transparent Hearing Status
-        send(command: 0x1803)                   // Transparent Hearing Level
-        send(command: 0x080D)                   // Smart Pause
-        send(command: 0x1607)                   // Touch Lock
-        send(command: 0x0401)                   // On-head Detection
-        send(command: 0x080B)                   // Auto Answer
-        send(command: 0x0815)                   // Comfort Call
-        send(command: 0x0601, payload: [0x00])  // Timer (Auto power-off)
+        let commands: [(UInt16, [UInt8])] = [
+            (0x0603, []),           // Battery
+            (0x1A05, []),           // ANC Enabled
+            (0x1A01, []),           // ANC Modes
+            (0x1A03, []),           // ANC Level
+            (0x1805, []),           // Transparency Status
+            (0x1803, []),           // Transparency Level
+            (0x080D, []),           // Smart Pause
+            (0x1607, []),           // Touch Lock
+            (0x0401, []),           // On-Head Detection
+            (0x080B, []),           // Auto Answer
+            (0x0815, []),           // Comfort Call
+            (0x0601, [0x00])        // Auto Power Off
+        ]
+        
+        // Stagger initial reads by 60ms so UART buffers never drop packets
+        for (index, item) in commands.enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 0.06) { [weak self] in
+                guard let self = self, self.isConnected else { return }
+                self.send(command: item.0, payload: item.1)
+            }
+        }
     }
     
-    private func handleIncomingData(_ data: [UInt8]) {
-        guard data.count >= 8, data[0] == 0xFF, data[1] == 0x03 else { return }
-        let commandId = (UInt16(data[6]) << 8) | UInt16(data[7])
-        let payload = Array(data[8...])
+    private func startPeriodicBatteryPoll() {
+        batteryPollTimer?.invalidate()
+        batteryPollTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
+            guard let self = self, self.isConnected else { return }
+            self.send(command: 0x0603)
+        }
+    }
+    
+    // MARK: - Streaming Frame Parser
+    private func parseIncomingStream(_ data: [UInt8]) {
+        rxBuffer.append(contentsOf: data)
         
+        while rxBuffer.count >= 8 {
+            guard let sofIndex = rxBuffer.firstIndex(of: 0xFF) else {
+                rxBuffer.removeAll()
+                return
+            }
+            
+            if sofIndex > 0 {
+                rxBuffer.removeSubrange(0..<sofIndex)
+            }
+            
+            guard rxBuffer.count >= 8 else { return }
+            
+            guard rxBuffer[1] == 0x03 else {
+                rxBuffer.removeFirst()
+                continue
+            }
+            
+            let flags = rxBuffer[2]
+            let payloadLength = Int(rxBuffer[3])
+            let totalFrameLen = 8 + payloadLength + ((flags & 0x01) != 0 ? 1 : 0)
+            
+            guard rxBuffer.count >= totalFrameLen else {
+                return // Wait for the remaining bytes
+            }
+            
+            let commandId = (UInt16(rxBuffer[6]) << 8) | UInt16(rxBuffer[7])
+            let payload = Array(rxBuffer[8..<(8 + payloadLength)])
+            rxBuffer.removeSubrange(0..<totalFrameLen)
+            
+            dispatchFrame(commandId: commandId, payload: payload)
+        }
+    }
+    
+    private func dispatchFrame(commandId: UInt16, payload: [UInt8]) {
         DispatchQueue.main.async {
             switch commandId {
             case 0x0703, 0x0683: // Battery
-                if let level = payload.first { self.batteryLevel = Int(level) }
+                if let level = payload.first {
+                    self.batteryLevel = Int(level)
+                }
                 
             case 0x1B05, 0x1A85: // ANC Enabled
                 if let val = payload.first {
@@ -226,21 +292,25 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
                 self.syncNoiseMode()
                 
             case 0x1B03, 0x1A83: // ANC Level
-                if let level = payload.first { self.ancStrength = 100.0 - Double(level) }
+                if let level = payload.first {
+                    self.ancStrength = 100.0 - Double(level)
+                }
                 
-            case 0x1905, 0x1885: // Transparent Hearing
+            case 0x1905, 0x1885: // Transparent Hearing Status
                 if let val = payload.first {
                     self.isTransparencyOn = (val == 1)
                     self.syncNoiseMode()
                 }
                 
             case 0x1903: // Transparency Level
-                if let level = payload.first { self.transparencyLevel = Double(level) }
+                if let level = payload.first {
+                    self.transparencyLevel = Double(level)
+                }
                 
             case 0x090D: // Smart Pause
                 if let val = payload.first { self.isSmartPauseOn = (val == 1) }
                 
-            case 0x1707, 0x1687: // Touch Lock
+            case 0x1707, 0x1687: // Touch Lock (0 = on)
                 if let val = payload.first { self.isTouchControlOn = (val == 0) }
                 
             case 0x0501: // On-Head Detection
@@ -253,7 +323,7 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
                 if let val = payload.first { self.isComfortCallOn = (val == 1) }
                 
             case 0x0701: // Auto Power Off
-                if payload.count >= 3, payload[0] == 0 {
+                if payload.count >= 3 && payload[0] == 0 {
                     let secs = (Int(payload[1]) << 8) | Int(payload[2])
                     self.autoPowerOffMinutes = secs / 60
                 }

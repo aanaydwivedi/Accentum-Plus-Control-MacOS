@@ -1,10 +1,3 @@
-//
-//  Untitled.swift
-//  MyApp
-//
-//  Created by Aanay Dwivedi on 21/10/26.
-//
-
 import SwiftUI
 
 struct NoiseControlView: View {
@@ -27,9 +20,12 @@ struct NoiseControlView: View {
                     }
                     Spacer()
                     if let battery = btManager.batteryLevel {
-                        Text("\(battery)% Battery")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
+                        HStack(spacing: 4) {
+                            Image(systemName: "battery.100percent")
+                                .foregroundColor(.green)
+                            Text("\(battery)%")
+                                .font(.headline.monospacedDigit())
+                        }
                     }
                 }
                 .padding(.vertical, 4)
@@ -59,7 +55,7 @@ struct NoiseControlView: View {
                 Text("Modes")
             }
             
-            // Dynamic Slider: Ambient Sound volume (when Transparency is ON)
+            // Slider 1: Ambient Sound Control (when Transparency is ON)
             if btManager.isTransparencyOn {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
@@ -89,7 +85,7 @@ struct NoiseControlView: View {
                 }
             }
             
-            // Dynamic Slider: ANC Strength (when in manual ANC mode)
+            // Slider 2: Active Noise Cancellation (when in manual ANC mode)
             if btManager.noiseMode == .anc && !btManager.isTransparencyOn {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
