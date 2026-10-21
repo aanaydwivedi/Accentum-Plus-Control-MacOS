@@ -1,6 +1,7 @@
 import Foundation
 import IOBluetooth
 import Combine
+import SwiftUI
 
 enum NoiseMode: String, CaseIterable, Identifiable {
     case adaptive = "Adaptive"
@@ -39,31 +40,33 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
     @Published var isAntiWindOn: Bool = false
     @Published var antiWindSetting: AntiWindSetting = .max
     @Published var isPhoneCallTransparencyOn: Bool = false
-    @Published var phoneCallTransparencyLevel: Double = 3.0 // 1 to 5 Sidetone
+    @Published var phoneCallTransparencyLevel: Double = 3.0 // 1 (Low) to 5 (High) Sidetone
     @Published var isAutoPauseTransparencyOn: Bool = true
     
     // MARK: - Connection Management (Multipoint)
-    @Published var isMultipointEnabled: Bool = true
+    @Published var isMultipointEnabled: Bool = UserDefaults.standard.object(forKey: "isMultipointEnabled") as? Bool ?? true
     @Published var pairedDevices: [PairedDevice] = []
     @Published var ownDeviceIndex: Int = 0
+    private var lastDisconnectedDeviceId: Int? = nil
     
-    // MARK: - My Sound & Equalizer (50Hz, 250Hz, 800Hz, 3kHz, 8kHz)
+    // MARK: - My Sound & Equalizer State (50Hz, 250Hz, 800Hz, 3kHz, 8kHz)
     @Published var eqGains: [Double] = [0.0, 0.0, 0.0, 0.0, 0.0]
-    @Published var selectedPresetName: String = "Custom"
+    @Published var selectedPresetName: String = "Wide Airy"
     @Published var isBassBoostOn: Bool = false
     @Published var isSpeechClarityOn: Bool = false
     @Published var isSoundPersonalizationOn: Bool = false
     @Published var customPresets: [EqPresetItem] = []
     
     let defaultPresets: [EqPresetItem] = [
-        EqPresetItem(name: "Flat", gains: [0.0, 0.0, 0.0, 0.0, 0.0]),
+        EqPresetItem(name: "Wide Airy", gains: [1.5, 0.5, 0.0, 2.0, 3.5]),
         EqPresetItem(name: "Rock", gains: [3.0, 1.0, -0.5, 2.0, 3.5]),
         EqPresetItem(name: "Pop", gains: [-0.5, 1.5, 2.0, 1.5, -0.5]),
         EqPresetItem(name: "Hip Hop", gains: [4.0, 2.0, 0.0, 1.0, 2.5]),
+        EqPresetItem(name: "Flat", gains: [0.0, 0.0, 0.0, 0.0, 0.0]),
         EqPresetItem(name: "Movie", gains: [3.5, 1.5, 0.0, 1.5, 0.5])
     ]
     
-    // MARK: - Behavior State (Kept exactly as working)
+    // MARK: - Behavior State
     @Published var isSmartPauseOn: Bool = true
     @Published var isTouchControlOn: Bool = true
     @Published var isOnHeadDetectionOn: Bool = true
@@ -136,14 +139,14 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
         case .adaptive:
             send(command: 0x1804, payload: [0x00]) // Transparency Off
             send(command: 0x1A04, payload: [0x01]) // ANC On
-            send(command: 0x1A00, payload: [0x03, 0x01]) // Adaptive On
-            send(command: 0x1A00, payload: [0x01, windVal]) // Anti-wind
+            send(command: 0x1A00, payload: [0x01, windVal, 0x02, 0x00, 0x03, 0x01])
+            send(command: 0x1A00, payload: [0x03, 0x01])
             
         case .custom:
             send(command: 0x1A04, payload: [0x01]) // ANC On
-            send(command: 0x1A00, payload: [0x03, 0x00]) // Adaptive Off
-            send(command: 0x1A00, payload: [0x01, windVal]) // Anti-wind
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) {
+            send(command: 0x1A00, payload: [0x01, windVal, 0x02, 0x00, 0x03, 0x00])
+            send(command: 0x1A00, payload: [0x03, 0x00])
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                 let hardwareLevel = UInt8(clamping: Int(round(self.ancSliderValue)))
                 self.send(command: 0x1A02, payload: [hardwareLevel])
             }
@@ -170,11 +173,13 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
         }
     }
     
-    // Single-pair command broadcast 0x1A81 reliably
     func setAntiWind(enabled: Bool, setting: AntiWindSetting? = nil) {
         self.isAntiWindOn = enabled
         if let s = setting { self.antiWindSetting = s }
         let windVal: UInt8 = enabled ? (self.antiWindSetting == .auto ? 0x02 : 0x01) : 0x00
+        let adaptiveByte: UInt8 = (noiseMode == .adaptive) ? 0x01 : 0x00
+        
+        send(command: 0x1A00, payload: [0x01, windVal, 0x02, 0x00, 0x03, adaptiveByte])
         send(command: 0x1A00, payload: [0x01, windVal])
     }
     
@@ -182,7 +187,7 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
         self.isPhoneCallTransparencyOn = enabled
         if let l = level { self.phoneCallTransparencyLevel = l }
         let val: UInt8 = enabled ? UInt8(clamping: Int(self.phoneCallTransparencyLevel)) : 0x00
-        send(command: 0x0805, payload: [val]) // Sidetone
+        send(command: 0x0805, payload: [val])
     }
     
     func setAutoPauseTransparency(_ on: Bool) {
@@ -190,21 +195,28 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
         send(command: 0x1800, payload: [on ? 0x01 : 0x00])
     }
     
-    // MARK: - Connection Management Actions
+    // MARK: - Connection Management Actions (Multipoint)
     func setMultipointEnabled(_ on: Bool) {
         self.isMultipointEnabled = on
-        // 0x1408 sets max simultaneous connections (2 = enabled, 1 = disabled)
+        UserDefaults.standard.set(on, forKey: "isMultipointEnabled")
         send(command: 0x1408, payload: [on ? 0x02 : 0x01])
         
         if !on {
             // Disconnect other paired devices so only This Mac stays connected
             for device in pairedDevices where !device.isThisDevice && device.isConnected {
+                lastDisconnectedDeviceId = device.id
                 send(command: 0x1403, payload: [UInt8(device.id)])
+            }
+        } else {
+            // Turning back ON: automatically reconnect the remembered secondary device
+            if let targetId = lastDisconnectedDeviceId {
+                send(command: 0x1402, payload: [UInt8(targetId)])
+            } else if let secondary = pairedDevices.first(where: { !$0.isThisDevice && !$0.isConnected }) {
+                send(command: 0x1402, payload: [UInt8(secondary.id)])
             }
         }
         
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            self.send(command: 0x1409) // Verify max connections
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
             self.refreshPairedDevices()
         }
     }
@@ -221,11 +233,13 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
     }
     
     func removeDevice(_ device: PairedDevice) {
-        pairedDevices.removeAll(where: { $0.id == device.id })
+        withAnimation {
+            self.pairedDevices.removeAll(where: { $0.id == device.id })
+        }
         if device.isConnected {
             send(command: 0x1403, payload: [UInt8(device.id)])
         }
-        send(command: 0x1405, payload: [UInt8(device.id)]) // Delete pairing
+        send(command: 0x1405, payload: [UInt8(device.id)])
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
             self.refreshPairedDevices()
         }
@@ -253,7 +267,6 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
     func applyPreset(_ preset: EqPresetItem) {
         selectedPresetName = preset.name
         eqGains = preset.gains
-        // Stagger band writes by 50ms so RFCOMM never drops packets
         for (i, gain) in preset.gains.enumerated() {
             DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 0.05) { [weak self] in
                 guard let self = self else { return }
@@ -264,12 +277,11 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
     }
     
     func readCurrentEqFromHeadphones() {
-        send(command: 0x1003, payload: [0x00]) // Get all 5 gains
+        send(command: 0x1003, payload: [0x00])
     }
     
     func saveCustomPreset(name: String) {
         let newPreset = EqPresetItem(name: name, gains: eqGains)
-        customPresets.removeAll(where: { $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame })
         customPresets.append(newPreset)
         selectedPresetName = name
         savePresets()
@@ -302,9 +314,9 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
         isSpeechClarityOn = on
         if on {
             isSoundPersonalizationOn = false
-            send(command: 0x0803, payload: [0x00, 0x02]) // Sound mode 2 = Speech Clarity
+            send(command: 0x0803, payload: [0x00, 0x02])
         } else {
-            send(command: 0x0803, payload: [0x00, 0x01]) // Sound mode 1 = Equalizer
+            send(command: 0x0803, payload: [0x00, 0x01])
         }
     }
     
@@ -312,7 +324,7 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
         isSoundPersonalizationOn = on
         if on {
             isSpeechClarityOn = false
-            send(command: 0x0803, payload: [0x00, 0x03]) // Sound mode 3 = Personalization
+            send(command: 0x0803, payload: [0x00, 0x03])
         } else {
             send(command: 0x0803, payload: [0x00, 0x01])
         }
@@ -345,7 +357,7 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
         send(command: 0x0600, payload: [0x00, UInt8((seconds >> 8) & 0xFF), UInt8(seconds & 0xFF)])
     }
     
-    // MARK: - Registration & Polling
+    // MARK: - Notifications & Query
     private func registerNotifications() {
         send(command: 0x0007, payload: [0x03]) // Battery
         send(command: 0x0007, payload: [0x0D]) // ANC
@@ -368,7 +380,6 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
             (0x1003, [0x00]),       // EQ Gains
             (0x1009, []),           // Bass boost
             (0x0804, []),           // Sound mode
-            (0x1409, []),           // Max connections
             (0x1407, []),           // Own index
             (0x1400, []),           // Device count
             (0x080D, []),           // Smart pause
@@ -395,7 +406,7 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
         }
     }
     
-    // MARK: - Stream Parser
+    // MARK: - Frame Decoder
     private func parseIncomingStream(_ data: [UInt8]) {
         rxBuffer.append(contentsOf: data)
         while rxBuffer.count >= 8 {
@@ -460,7 +471,7 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
                     if s > 0 { self.phoneCallTransparencyLevel = Double(min(5, max(1, s))) }
                 }
                 
-            case 0x1103: // EQ All 5 Gains read from headset
+            case 0x1103: // EQ All Gains
                 if payload.count >= 5 {
                     self.eqGains = (0..<5).map { Double(Int8(bitPattern: payload[$0])) / 10.0 }
                 }
@@ -475,10 +486,9 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
                     self.isSoundPersonalizationOn = (mode == 3)
                 }
                 
-            case 0x1509: // Max Connections
-                if let maxConn = payload.first {
-                    self.isMultipointEnabled = (maxConn >= 2)
-                }
+            case 0x1509:
+                // Hardware capability reports 2, do not overwrite user preference
+                break
                 
             case 0x1507:
                 if let own = payload.first { self.ownDeviceIndex = Int(own) }
@@ -509,7 +519,6 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
                         } else {
                             self.pairedDevices.append(item)
                         }
-                        // Eliminate any invalid items and sort cleanly
                         self.pairedDevices.removeAll(where: { $0.name.trimmingCharacters(in: .whitespacesAndNewlines).count < 2 })
                         self.pairedDevices.sort { $0.id < $1.id }
                     }
