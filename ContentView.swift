@@ -5,7 +5,7 @@ struct ContentView: View {
     @State private var selectedTab: SidebarItem? = .noiseControl
     
     enum SidebarItem: Hashable {
-        case noiseControl, behavior
+        case noiseControl, mySound, connectionManagement, behavior
     }
     
     var body: some View {
@@ -14,6 +14,12 @@ struct ContentView: View {
                 Section("Headphones") {
                     NavigationLink(value: SidebarItem.noiseControl) {
                         Label("Noise Control", systemImage: "earbuds")
+                    }
+                    NavigationLink(value: SidebarItem.mySound) {
+                        Label("My Sound", systemImage: "slider.vertical.3")
+                    }
+                    NavigationLink(value: SidebarItem.connectionManagement) {
+                        Label("Connections", systemImage: "laptopcomputer.and.iphone")
                     }
                     NavigationLink(value: SidebarItem.behavior) {
                         Label("Behavior", systemImage: "switch.2")
@@ -28,6 +34,10 @@ struct ContentView: View {
                 switch selectedTab {
                 case .noiseControl:
                     NoiseControlView()
+                case .mySound:
+                    MySoundView()
+                case .connectionManagement:
+                    ConnectionManagementView()
                 case .behavior:
                     BehaviorView()
                 default:
@@ -37,31 +47,27 @@ struct ContentView: View {
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                // Single unified macOS toolbar pill without overlapping inner borders
+                // Integrated native toolbar pill without overlapping inner borders
                 HStack(spacing: 8) {
                     if btManager.isConnected {
-                        // Live Battery Indicator
                         if let battery = btManager.batteryLevel {
                             HStack(spacing: 4) {
                                 Image(systemName: batteryIcon(for: battery))
                                     .foregroundColor(batteryColor(for: battery))
                                 Text("\(battery)%")
                                     .font(.system(.body, design: .rounded).monospacedDigit())
-                                    .foregroundColor(.primary)
                             }
                             
                             Divider()
                                 .frame(height: 12)
                         }
                         
-                        // Status Indicator
                         HStack(spacing: 5) {
                             Circle()
                                 .fill(Color.green)
                                 .frame(width: 8, height: 8)
                             Text("Connected")
                                 .font(.system(.body, design: .rounded))
-                                .foregroundColor(.primary)
                         }
                     } else {
                         HStack(spacing: 5) {
@@ -74,26 +80,18 @@ struct ContentView: View {
                         }
                     }
                 }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
             }
         }
-        .frame(minWidth: 620, minHeight: 480)
+        .frame(minWidth: 680, minHeight: 520)
     }
     
-    // Correlates battery percentage with SF Symbols levels
     private func batteryIcon(for level: Int) -> String {
         switch level {
-        case ..<15:
-            return "battery.0percent"
-        case 15..<38:
-            return "battery.25percent"
-        case 38..<63:
-            return "battery.50percent"
-        case 63..<88:
-            return "battery.75percent"
-        default:
-            return "battery.100percent"
+        case ..<15: return "battery.0percent"
+        case 15..<38: return "battery.25percent"
+        case 38..<63: return "battery.50percent"
+        case 63..<88: return "battery.75percent"
+        default: return "battery.100percent"
         }
     }
     
