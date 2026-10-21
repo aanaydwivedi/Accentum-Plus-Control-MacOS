@@ -4,6 +4,7 @@ struct MenuBarView: View {
     @EnvironmentObject var btManager: BluetoothManager
     @State private var selectedTab: Int = 0
     @State private var previousTab: Int = 0
+    @Namespace private var glassNamespace // Proper view-level namespace
     
     var body: some View {
         VStack(spacing: 0) {
@@ -38,7 +39,7 @@ struct MenuBarView: View {
             Divider()
                 .opacity(0.4)
             
-            // Custom Directional Slide Container (Slightly faster duration: 0.22s)
+            // Custom Directional Slide Container
             ZStack {
                 if !btManager.isConnected {
                     MenuBarDisconnectedView()
@@ -61,29 +62,33 @@ struct MenuBarView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             
-            // Bottom "Liquid Glass" Style Floating Navigation Bar
-            HStack(spacing: 6) {
-                MenuBarTabButton(icon: "earbuds", title: "Noise", isSelected: selectedTab == 0) {
+            // Apple Native iOS Liquid Glass Floating Tab Bar
+            HStack(spacing: 4) {
+                LiquidGlassTabButton(icon: "earbuds", title: "Noise", isSelected: selectedTab == 0, namespace: glassNamespace) {
                     switchToTab(0)
                 }
-                MenuBarTabButton(icon: "slider.vertical.3", title: "Sound", isSelected: selectedTab == 1) {
+                LiquidGlassTabButton(icon: "slider.vertical.3", title: "Sound", isSelected: selectedTab == 1, namespace: glassNamespace) {
                     switchToTab(1)
                 }
-                MenuBarTabButton(icon: "laptopcomputer.and.iphone", title: "Devices", isSelected: selectedTab == 2) {
+                LiquidGlassTabButton(icon: "laptopcomputer.and.iphone", title: "Devices", isSelected: selectedTab == 2, namespace: glassNamespace) {
                     switchToTab(2)
                 }
-                MenuBarTabButton(icon: "switch.2", title: "Behavior", isSelected: selectedTab == 3) {
+                LiquidGlassTabButton(icon: "switch.2", title: "Behavior", isSelected: selectedTab == 3, namespace: glassNamespace) {
                     switchToTab(3)
                 }
             }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 6)
+            .padding(4)
             .background(.ultraThinMaterial)
-            .cornerRadius(20)
-            .shadow(color: Color.black.opacity(0.15), radius: 6, x: 0, y: 3)
-            .padding(.horizontal, 10)
-            .padding(.bottom, 10)
-            .padding(.top, 4)
+            .background(Color.primary.opacity(0.04))
+            .cornerRadius(30)
+            .overlay(
+                RoundedRectangle(cornerRadius: 30)
+                    .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
+            )
+            .shadow(color: Color.black.opacity(0.2), radius: 10, x: 0, y: 5)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
+            .padding(.top, 6)
         }
         .frame(width: 340, height: 540)
     }
@@ -109,7 +114,7 @@ struct MenuBarView: View {
     private func switchToTab(_ newIndex: Int) {
         guard newIndex != selectedTab else { return }
         previousTab = selectedTab
-        withAnimation(.easeInOut(duration: 0.22)) {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
             selectedTab = newIndex
         }
     }
@@ -131,10 +136,12 @@ struct MenuBarView: View {
     }
 }
 
-struct MenuBarTabButton: View {
+// Apple iOS Liquid Glass Tab Button with Selection Morph
+struct LiquidGlassTabButton: View {
     let icon: String
     let title: String
     let isSelected: Bool
+    var namespace: Namespace.ID
     let action: () -> Void
     
     var body: some View {
@@ -143,13 +150,21 @@ struct MenuBarTabButton: View {
                 Image(systemName: icon)
                     .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
                 Text(title)
-                    .font(.system(size: 10, weight: isSelected ? .medium : .regular))
+                    .font(.system(size: 9, weight: isSelected ? .medium : .regular))
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
-            .background(isSelected ? Color.accentColor.opacity(0.25) : Color.clear)
+            .padding(.vertical, 8)
+            .background(
+                ZStack {
+                    if isSelected {
+                        RoundedRectangle(cornerRadius: 24)
+                            .fill(Color.accentColor.opacity(0.25))
+                            .matchedGeometryEffect(id: "GLASS_ACTIVE_TAB", in: namespace)
+                            .shadow(color: Color.accentColor.opacity(0.1), radius: 4, x: 0, y: 2)
+                    }
+                }
+            )
             .foregroundColor(isSelected ? .accentColor : .secondary)
-            .cornerRadius(10)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

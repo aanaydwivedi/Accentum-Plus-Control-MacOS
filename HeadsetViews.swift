@@ -67,6 +67,79 @@ struct VerticalEqSlider: View {
     }
 }
 
+// MARK: - CENTERED (BIPOLAR) ANC SLIDER
+/// Full-width slider whose fill grows outward from the middle:
+/// left of center = ANC, right of center = Transparency.
+/// Center (50) is always the exact horizontal middle of the row, with a soft snap.
+struct CenteredAncSlider: View {
+    @Binding var value: Double
+    var range: ClosedRange<Double> = 0...100
+    var center: Double = 50
+    var snapWindow: Double = 2
+
+    private let trackHeight: CGFloat = 4
+    private let thumbWidth: CGFloat = 28
+    private let thumbHeight: CGFloat = 18
+
+    var body: some View {
+        GeometryReader { geo in
+            let usable = max(geo.size.width - thumbWidth, 1)
+            let fraction = CGFloat((value - range.lowerBound) / (range.upperBound - range.lowerBound))
+            let thumbX = fraction * usable + thumbWidth / 2
+            let midX = geo.size.width / 2
+
+            ZStack(alignment: .leading) {
+                // base track
+                Capsule()
+                    .fill(Color.secondary.opacity(0.25))
+                    .frame(height: trackHeight)
+
+                // fill grows from the center outward
+                Capsule()
+                    .fill(Color.accentColor)
+                    .frame(width: abs(thumbX - midX), height: trackHeight)
+                    .offset(x: min(thumbX, midX))
+
+                // center tick
+                Capsule()
+                    .fill(Color.secondary.opacity(0.7))
+                    .frame(width: 2, height: 12)
+                    .offset(x: midX - 1)
+
+                // thumb
+                Capsule()
+                    .fill(Color.white)
+                    .overlay(Capsule().strokeBorder(Color.black.opacity(0.12), lineWidth: 0.5))
+                    .shadow(color: .black.opacity(0.28), radius: 2, y: 1)
+                    .frame(width: thumbWidth, height: thumbHeight)
+                    .offset(x: thumbX - thumbWidth / 2)
+            }
+            .frame(width: geo.size.width, height: geo.size.height)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { g in
+                        let p = min(max(Double((g.location.x - thumbWidth / 2) / usable), 0), 1)
+                        var v = (range.lowerBound + p * (range.upperBound - range.lowerBound)).rounded()
+                        if abs(v - center) <= snapWindow { v = center }
+                        if v != value { value = v }
+                    }
+            )
+        }
+        .frame(height: 26)
+        .accessibilityElement()
+        .accessibilityLabel("Noise cancellation and transparency")
+        .accessibilityValue(Text("\(Int(value))"))
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: value = min(value + 1, range.upperBound)
+            case .decrement: value = max(value - 1, range.lowerBound)
+            @unknown default: break
+            }
+        }
+    }
+}
+
 // MARK: - 1. NOISE CONTROL VIEW
 struct NoiseControlView: View {
     @EnvironmentObject var btManager: BluetoothManager
@@ -120,6 +193,7 @@ struct NoiseControlView: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 
+                Group {
                 if btManager.noiseMode == .custom {
                     VStack(spacing: 10) {
                         HStack {
@@ -132,11 +206,11 @@ struct NoiseControlView: View {
                                 .foregroundColor(btManager.ancSliderValue > 50 ? .primary : .secondary)
                         }
                         
-                        // Clean Slider - no vertical line artifact
-                        Slider(value: Binding(
+                        // Centered slider - spans the full row, 50 sits dead center
+                        CenteredAncSlider(value: Binding(
                             get: { btManager.ancSliderValue },
                             set: { val in btManager.setSliderValue(val) }
-                        ), in: 0...100, step: 1)
+                        ))
                     }
                     .padding(.vertical, 4)
                 } else if btManager.noiseMode == .adaptive {
@@ -154,13 +228,15 @@ struct NoiseControlView: View {
                         .foregroundColor(.secondary)
                         .padding(.vertical, 4)
                 }
+                }
+                .frame(maxWidth: .infinity, minHeight: 56, alignment: .topLeading)
+                .animation(nil, value: btManager.noiseMode)
             } header: {
                 Text("Noise Control")
             }
             
             // Anti-Wind Settings
-            if btManager.noiseMode != .off {
-                Section {
+            Section {
                     Toggle(isOn: Binding(
                         get: { btManager.isAntiWindOn },
                         set: { val in btManager.setAntiWind(enabled: val) }
@@ -189,10 +265,11 @@ struct NoiseControlView: View {
                         .pickerStyle(.segmented)
                         .labelsHidden()
                     }
-                } header: {
-                    Text("Anti-wind Settings")
-                }
+            } header: {
+                Text("Anti-wind Settings")
             }
+            .disabled(btManager.noiseMode == .off)
+            .opacity(btManager.noiseMode == .off ? 0.45 : 1)
             
             // Phone Calls (Sidetone)
             Section {
