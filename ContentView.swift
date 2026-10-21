@@ -75,7 +75,7 @@ struct ContentView: View {
                             Circle()
                                 .fill(Color.secondary)
                                 .frame(width: 8, height: 8)
-                            Text("Disconnected")
+                            Text(btManager.isConnecting ? "Connecting..." : "Disconnected")
                                 .font(.system(size: 12, weight: .medium, design: .rounded))
                                 .foregroundColor(.secondary)
                         }
@@ -107,21 +107,39 @@ struct ContentView: View {
 
 struct DisconnectedView: View {
     @EnvironmentObject var btManager: BluetoothManager
+    
     var body: some View {
         VStack(spacing: 16) {
-            Image(systemName: "headphones")
-                .font(.system(size: 60))
-                .foregroundColor(.secondary)
-            Text("No ACCENTUM Plus Connected")
-                .font(.title2).fontWeight(.medium)
-            Text("Ensure your headphones are paired in macOS System Settings.")
-                .foregroundColor(.secondary)
-            Button("Connect to Headphones") {
-                btManager.connectToAccentumPlus()
+            if btManager.isConnecting {
+                ProgressView()
+                    .scaleEffect(1.2)
+                Text("Connecting to ACCENTUM Plus...")
+                    .font(.title3)
+                    .foregroundColor(.secondary)
+            } else {
+                Image(systemName: "headphones")
+                    .font(.system(size: 60))
+                    .foregroundColor(.secondary)
+                Text("Searching for ACCENTUM Plus...")
+                    .font(.title2).fontWeight(.medium)
+                Text("Turn on your headphones or ensure they are paired in System Settings.")
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 30)
+                
+                Button("Retry Connection") {
+                    btManager.connectToAccentumPlus()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .padding(.top, 8)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear {
+            if !btManager.isConnected && !btManager.isConnecting {
+                btManager.connectToAccentumPlus()
+            }
+        }
     }
 }

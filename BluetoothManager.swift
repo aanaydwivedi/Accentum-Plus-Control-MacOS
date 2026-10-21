@@ -29,7 +29,7 @@ struct EqPresetItem: Identifiable, Hashable, Codable {
     let gains: [Double]
 }
 
-class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDelegate {
+final class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDelegate {
     @Published var isConnected = false
     @Published var isConnecting = false
     @Published var deviceName = "ACCENTUM Plus"
@@ -52,7 +52,7 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
     
     // MARK: - My Sound & Equalizer State
     @Published var eqGains: [Double] = [0.0, 0.0, 0.0, 0.0, 0.0]
-    @Published var selectedPresetName: String = "Wide Airy"
+    @Published var selectedPresetName: String = "Flat"
     @Published var isBassBoostOn: Bool = false
     @Published var isSpeechClarityOn: Bool = false
     @Published var isSoundPersonalizationOn: Bool = false
@@ -76,7 +76,8 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
     @Published var autoPowerOffMinutes: Int = 15
     
     private var rfcommChannel: IOBluetoothRFCOMMChannel?
-    let vendorSennheiser: UInt16 = 0x0495
+    private let btQueue = DispatchQueue(label: "com.accentum.bluetooth.queue", qos: .userInitiated)
+    private var connectNotification: IOBluetoothUserNotification?
     
     private var rxBuffer = [UInt8]()
     private var sliderDebounceTimer: Timer?
@@ -87,70 +88,130 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
     override init() {
         super.init()
         loadPresets()
-        // Auto-connect immediately on launch (eliminates extra click)
-        connectToAccentumPlus()
-        startAutoReconnectMonitor()
+        registerForSystemBluetoothNotifications()
+        
+        // Allow macOS runloop and bluetoothd to settle before first connection attempt
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            self?.connectToAccentumPlus()
+            self?.startAutoReconnectMonitor()
+        }
     }
     
-    func connectToAccentumPlus() {
-        guard !isConnected else { return }
-        guard let paired = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] else { return }
-        guard let accentum = paired.first(where: {
-            $0.name?.localizedCaseInsensitiveContains("ACCENTUM Plus") == true
-        }) else {
-            deviceName = "ACCENTUM Plus not found"
-            return
-        }
-        
-        deviceName = accentum.name ?? "ACCENTUM Plus"
-        isConnecting = true
-        accentum.openRFCOMMChannelSync(&rfcommChannel, withChannelID: 1, delegate: self)
-        
-        if rfcommChannel != nil {
-            DispatchQueue.main.async {
-                self.isConnected = true
-                self.isConnecting = false
+    deinit {
+        connectNotification?.unregister()
+        batteryPollTimer?.invalidate()
+        autoReconnectTimer?.invalidate()
+    }
+    
+    // MARK: - System-Wide Connect Listener
+    private func registerForSystemBluetoothNotifications() {
+        let selector = #selector(deviceConnectedNotification(notification:device:))
+        connectNotification = IOBluetoothDevice.register(forConnectNotifications: self, selector: selector)
+    }
+    
+    @objc private func deviceConnectedNotification(notification: IOBluetoothUserNotification, device: IOBluetoothDevice) {
+        if device.name?.localizedCaseInsensitiveContains("ACCENTUM Plus") == true {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                guard let self = self, !self.isConnected else { return }
+                self.connectToAccentumPlus()
             }
-            registerNotifications()
-            readInitialState()
-            startPeriodicBatteryPoll()
-        } else {
+        }
+    }
+    
+    // MARK: - Non-Blocking Connection Logic
+    func connectToAccentumPlus() {
+        guard !isConnected && !isConnecting else { return }
+        
+        DispatchQueue.main.async { self.isConnecting = true }
+        
+        btQueue.async { [weak self] in
+            guard let self = self else { return }
+            guard let paired = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] else {
+                DispatchQueue.main.async { self.isConnecting = false }
+                return
+            }
+            
+            guard let accentum = paired.first(where: {
+                $0.name?.localizedCaseInsensitiveContains("ACCENTUM Plus") == true
+            }) else {
+                DispatchQueue.main.async {
+                    self.deviceName = "ACCENTUM Plus not paired"
+                    self.isConnecting = false
+                }
+                return
+            }
+            
             DispatchQueue.main.async {
-                self.isConnecting = false
+                self.deviceName = accentum.name ?? "ACCENTUM Plus"
+            }
+            
+            // If device baseband is not connected, open baseband connection first
+            if !accentum.isConnected() {
+                accentum.openConnection()
+            }
+            
+            var channel: IOBluetoothRFCOMMChannel?
+            // Channel 1 is Sennheiser GAIA RFCOMM channel
+            let status = accentum.openRFCOMMChannelSync(&channel, withChannelID: 1, delegate: self)
+            
+            DispatchQueue.main.async {
+                if status == kIOReturnSuccess, let openChannel = channel {
+                    self.rfcommChannel = openChannel
+                    self.isConnected = true
+                    self.isConnecting = false
+                    self.registerNotifications()
+                    self.readInitialState()
+                    self.startPeriodicBatteryPoll()
+                } else {
+                    self.rfcommChannel = nil
+                    self.isConnected = false
+                    self.isConnecting = false
+                }
             }
         }
     }
     
     private func startAutoReconnectMonitor() {
         autoReconnectTimer?.invalidate()
-        autoReconnectTimer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: true) { [weak self] _ in
+        // Checks every 5 seconds in background if disconnected
+        autoReconnectTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
-            if !self.isConnected {
+            if !self.isConnected && !self.isConnecting {
                 self.connectToAccentumPlus()
             }
         }
     }
     
+    // MARK: - RFCOMM Delegate Callbacks
     func rfcommChannelData(_ rfcommChannel: IOBluetoothRFCOMMChannel!, data dataPointer: UnsafeMutableRawPointer!, length dataLength: Int) {
         let buffer = UnsafeBufferPointer(start: dataPointer.assumingMemoryBound(to: UInt8.self), count: dataLength)
-        parseIncomingStream(Array(buffer))
+        let incomingBytes = Array(buffer)
+        
+        btQueue.async { [weak self] in
+            self?.parseIncomingStream(incomingBytes)
+        }
     }
     
     func rfcommChannelClosed(_ rfcommChannel: IOBluetoothRFCOMMChannel!) {
         DispatchQueue.main.async {
             self.isConnected = false
+            self.isConnecting = false
             self.batteryLevel = nil
             self.batteryPollTimer?.invalidate()
+            self.rfcommChannel = nil
         }
     }
     
     // MARK: - Safe Send
     private func send(command: UInt16, payload: [UInt8] = []) {
-        var frame = GaiaFrame.encode(command: command, payload: payload)
-        let frameLength = UInt16(frame.count)
-        frame.withUnsafeMutableBytes { ptr in
-            guard let baseAddress = ptr.baseAddress else { return }
-            rfcommChannel?.writeSync(baseAddress, length: frameLength)
+        btQueue.async { [weak self] in
+            guard let self = self, let channel = self.rfcommChannel, channel.isOpen() else { return }
+            var frame = GaiaFrame.encode(command: command, payload: payload)
+            let frameLength = UInt16(frame.count)
+            frame.withUnsafeMutableBytes { ptr in
+                guard let base = ptr.baseAddress else { return }
+                channel.writeSync(base, length: frameLength)
+            }
         }
     }
     
@@ -190,7 +251,7 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
         }
         
         sliderDebounceTimer?.invalidate()
-        sliderDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.03, repeats: false) { [weak self] _ in
+        sliderDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.04, repeats: false) { [weak self] _ in
             guard let self = self else { return }
             let hardwareLevel = UInt8(clamping: Int(round(value)))
             self.send(command: 0x1A02, payload: [hardwareLevel])
@@ -228,13 +289,13 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
         if !on {
             for device in pairedDevices where !device.isThisDevice && device.isConnected {
                 lastDisconnectedDeviceId = device.id
-                send(command: 0x1403, payload: [UInt8(device.id)])
+                send(command: 0x1403, payload: [UInt8(clamping: device.id)])
             }
         } else {
             if let targetId = lastDisconnectedDeviceId {
-                send(command: 0x1402, payload: [UInt8(targetId)])
+                send(command: 0x1402, payload: [UInt8(clamping: targetId)])
             } else if let secondary = pairedDevices.first(where: { !$0.isThisDevice && !$0.isConnected }) {
-                send(command: 0x1402, payload: [UInt8(secondary.id)])
+                send(command: 0x1402, payload: [UInt8(clamping: secondary.id)])
             }
         }
         
@@ -244,10 +305,11 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
     }
     
     func toggleDeviceConnection(_ device: PairedDevice) {
+        let devId = UInt8(clamping: device.id)
         if device.isConnected {
-            send(command: 0x1403, payload: [UInt8(device.id)])
+            send(command: 0x1403, payload: [devId])
         } else {
-            send(command: 0x1402, payload: [UInt8(device.id)])
+            send(command: 0x1402, payload: [devId])
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
             self.refreshPairedDevices()
@@ -256,10 +318,11 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
     
     func removeDevice(_ device: PairedDevice) {
         self.pairedDevices.removeAll(where: { $0.id == device.id })
+        let devId = UInt8(clamping: device.id)
         if device.isConnected {
-            send(command: 0x1403, payload: [UInt8(device.id)])
+            send(command: 0x1403, payload: [devId])
         }
-        send(command: 0x1405, payload: [UInt8(device.id)])
+        send(command: 0x1405, payload: [devId])
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
             self.refreshPairedDevices()
         }
@@ -270,7 +333,7 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
         send(command: 0x1400)
     }
     
-    // MARK: - Graphic EQ & Presets Actions
+    // MARK: - Graphic EQ & Presets
     func setEqBand(index: Int, gain: Double) {
         guard index >= 0 && index < eqGains.count else { return }
         eqGains[index] = gain
@@ -378,16 +441,12 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
         send(command: 0x0600, payload: [0x00, UInt8((seconds >> 8) & 0xFF), UInt8(seconds & 0xFF)])
     }
     
-    // MARK: - Query & Registration
+    // MARK: - Initialization Queries
     private func registerNotifications() {
-        send(command: 0x0007, payload: [0x03])
-        send(command: 0x0007, payload: [0x0D])
-        send(command: 0x0007, payload: [0x0C])
-        send(command: 0x0007, payload: [0x08])
-        send(command: 0x0007, payload: [0x0A])
-        send(command: 0x0007, payload: [0x0B])
-        send(command: 0x0007, payload: [0x04])
-        send(command: 0x0007, payload: [0x02])
+        let notificationIds: [UInt8] = [0x03, 0x0D, 0x0C, 0x08, 0x0A, 0x0B, 0x04, 0x02]
+        for nid in notificationIds {
+            send(command: 0x0007, payload: [nid])
+        }
     }
     
     private func readInitialState() {
@@ -428,7 +487,7 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
         }
     }
     
-    // MARK: - Frame Decoder
+    // MARK: - Stream Parser
     private func parseIncomingStream(_ data: [UInt8]) {
         rxBuffer.append(contentsOf: data)
         while rxBuffer.count >= 8 {
@@ -457,7 +516,8 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
     }
     
     private func dispatchFrame(commandId: UInt16, payload: [UInt8]) {
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
             switch commandId {
             case 0x0703, 0x0683:
                 if let b = payload.first { self.batteryLevel = Int(b) }
@@ -508,9 +568,6 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
                     self.isSoundPersonalizationOn = (mode == 3)
                 }
                 
-            case 0x1509:
-                break
-                
             case 0x1507:
                 if let own = payload.first { self.ownDeviceIndex = Int(own) }
                 
@@ -539,7 +596,6 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
                         } else {
                             self.pairedDevices.append(item)
                         }
-                        self.pairedDevices.removeAll(where: { $0.name.trimmingCharacters(in: .whitespacesAndNewlines).count < 2 })
                         self.pairedDevices.sort { $0.id < $1.id }
                     }
                 }
