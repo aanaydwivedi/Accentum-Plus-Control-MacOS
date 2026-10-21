@@ -47,7 +47,6 @@ struct ContentView: View {
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                // Generously padded native toolbar pill
                 HStack(spacing: 8) {
                     if btManager.isConnected {
                         if let battery = btManager.batteryLevel {

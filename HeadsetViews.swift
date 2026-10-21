@@ -51,7 +51,7 @@ struct VerticalEqSlider: View {
                             let clampedY = max(0, min(height, value.location.y))
                             let fraction = Double(1.0 - (clampedY / height))
                             let unrounded = range.lowerBound + fraction * (range.upperBound - range.lowerBound)
-                            gain = (round(unrounded * 2.0) / 2.0) // Step 0.5 dB
+                            gain = (round(unrounded * 2.0) / 2.0) // 0.5 dB step
                         }
                 )
                 .onTapGesture(count: 2) {
@@ -158,7 +158,7 @@ struct NoiseControlView: View {
                 Text("Noise Control")
             }
             
-            // Anti-Wind Settings (Auto / Max)
+            // Anti-Wind Settings
             if btManager.noiseMode != .off {
                 Section {
                     Toggle(isOn: Binding(
@@ -261,10 +261,21 @@ struct NoiseControlView: View {
 struct ConnectionManagementView: View {
     @EnvironmentObject var btManager: BluetoothManager
     
+    // Strict name filter eliminates ghost empty rows completely
+    private var validDevices: [PairedDevice] {
+        btManager.pairedDevices.filter {
+            let cleaned = $0.name.trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters))
+            return cleaned.count >= 2
+        }
+    }
+    
     var body: some View {
         Form {
             Section {
-                Toggle(isOn: $btManager.isMultipointEnabled) {
+                Toggle(isOn: Binding(
+                    get: { btManager.isMultipointEnabled },
+                    set: { val in btManager.setMultipointEnabled(val) }
+                )) {
                     HStack(spacing: 10) {
                         Image(systemName: "laptopcomputer.and.iphone")
                             .font(.system(size: 20))
@@ -283,13 +294,13 @@ struct ConnectionManagementView: View {
             }
             
             Section {
-                if btManager.pairedDevices.isEmpty {
+                if validDevices.isEmpty {
                     HStack {
                         ProgressView().scaleEffect(0.8)
                         Text("Reading paired devices...").foregroundColor(.secondary)
                     }
                 } else {
-                    ForEach(btManager.pairedDevices) { device in
+                    ForEach(validDevices) { device in
                         HStack(spacing: 12) {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(device.name)
@@ -350,13 +361,12 @@ struct ConnectionManagementView: View {
     }
 }
 
-// MARK: - 3. MY SOUND VIEW (Vertical Sliders & Exact Bands)
+// MARK: - 3. MY SOUND VIEW (Exact Bands & Sync from Headphone)
 struct MySoundView: View {
     @EnvironmentObject var btManager: BluetoothManager
     @State private var showingSaveSheet = false
     @State private var newPresetName = ""
     
-    // User requested exact bands: 50, 250, 800, 3k, 8k
     let bandLabels = ["50 Hz", "250 Hz", "800 Hz", "3 kHz", "8 kHz"]
     
     var body: some View {
@@ -384,17 +394,18 @@ struct MySoundView: View {
                         if !btManager.customPresets.isEmpty {
                             Section("My Presets") {
                                 ForEach(btManager.customPresets) { preset in
-                                    HStack {
-                                        Button(preset.name) {
-                                            btManager.applyPreset(preset)
-                                        }
+                                    Button(preset.name) {
+                                        btManager.applyPreset(preset)
                                     }
                                 }
                             }
                         }
                         
                         Section {
-                            Button("Save Current Curve as New Preset...") {
+                            Button("Capture Current Curve from Headphones") {
+                                btManager.readCurrentEqFromHeadphones()
+                            }
+                            Button("Save Curve as New Preset...") {
                                 newPresetName = ""
                                 showingSaveSheet = true
                             }
@@ -406,7 +417,7 @@ struct MySoundView: View {
                 }
                 .padding(.vertical, 2)
                 
-                // Vertical 5-Band Sliders
+                // 5 Vertical Sliders
                 HStack(spacing: 24) {
                     ForEach(0..<5) { index in
                         VerticalEqSlider(
@@ -428,6 +439,8 @@ struct MySoundView: View {
                 .toggleStyle(.switch)
             } header: {
                 Text("Equalizer")
+            } footer: {
+                Text("Tip: Tap 'Capture Current Curve' to read your exact 'Wide Airy' preset numbers from your phone.")
             }
             
             Section {
@@ -467,7 +480,6 @@ struct MySoundView: View {
                         .labelsHidden()
                     }
                     
-                    // Wave graphic matching Image 5
                     HStack(alignment: .bottom, spacing: 4) {
                         ForEach(0..<32) { bar in
                             RoundedRectangle(cornerRadius: 1.5)
@@ -479,7 +491,7 @@ struct MySoundView: View {
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.vertical, 4)
                     
-                    Text("Sound Personalization uses an algorithm to create a unique sound profile to your unique listening preferences.")
+                    Text("Sound Personalization uses an algorithm to create a unique sound profile tuned to your hearing preferences.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -493,14 +505,15 @@ struct MySoundView: View {
         .sheet(isPresented: $showingSaveSheet) {
             VStack(spacing: 16) {
                 Text("New Preset").font(.headline)
-                TextField("Preset Name (e.g. Acoustic, Hip Hop)", text: $newPresetName)
+                TextField("Preset Name (e.g. Acoustic, Wide Airy)", text: $newPresetName)
                     .textFieldStyle(.roundedBorder)
                 HStack {
                     Button("Cancel") { showingSaveSheet = false }
                     Spacer()
                     Button("Save") {
-                        if !newPresetName.trimmingCharacters(in: .whitespaces).isEmpty {
-                            btManager.saveCustomPreset(name: newPresetName.trimmingCharacters(in: .whitespaces))
+                        let clean = newPresetName.trimmingCharacters(in: .whitespaces)
+                        if !clean.isEmpty {
+                            btManager.saveCustomPreset(name: clean)
                             showingSaveSheet = false
                         }
                     }
@@ -520,7 +533,7 @@ struct MySoundView: View {
     }
 }
 
-// MARK: - 4. BEHAVIOR VIEW
+// MARK: - 4. BEHAVIOR VIEW (100% Retained)
 struct BehaviorView: View {
     @EnvironmentObject var btManager: BluetoothManager
     
