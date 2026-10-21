@@ -184,7 +184,11 @@ struct NoiseControlView: View {
             Section {
                 Picker("Noise Control", selection: Binding(
                     get: { btManager.noiseMode },
-                    set: { newMode in btManager.setNoiseMode(newMode) }
+                    set: { newMode in
+                        // Defer + de-dupe: macOS segmented pickers can call the setter during a view update
+                        guard newMode != btManager.noiseMode else { return }
+                        DispatchQueue.main.async { btManager.setNoiseMode(newMode) }
+                    }
                 )) {
                     Text("Adaptive").tag(NoiseMode.adaptive)
                     Text("Custom").tag(NoiseMode.custom)
@@ -257,7 +261,10 @@ struct NoiseControlView: View {
                     if btManager.isAntiWindOn {
                         Picker("Anti-wind Mode", selection: Binding(
                             get: { btManager.antiWindSetting },
-                            set: { val in btManager.setAntiWind(enabled: true, setting: val) }
+                            set: { val in
+                                guard val != btManager.antiWindSetting else { return }
+                                DispatchQueue.main.async { btManager.setAntiWind(enabled: true, setting: val) }
+                            }
                         )) {
                             Text("Auto").tag(AntiWindSetting.auto)
                             Text("Max").tag(AntiWindSetting.max)
@@ -330,6 +337,7 @@ struct NoiseControlView: View {
             }
         }
         .formStyle(.grouped)
+        .animation(nil, value: btManager.noiseMode)
         .navigationTitle("Noise Control")
     }
 }

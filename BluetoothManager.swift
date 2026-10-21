@@ -1,6 +1,7 @@
 import Foundation
 import IOBluetooth
 import Combine
+import CoreAudio
 import SwiftUI
 
 enum NoiseMode: String, CaseIterable, Identifiable {
@@ -34,6 +35,8 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
     @Published var isConnecting = false
     @Published var deviceName = "ACCENTUM Plus"
     @Published var batteryLevel: Int? = nil
+    /// Output sample rate of the headset as macOS sees it, e.g. "44.1 kHz". Empty when unknown.
+    @Published var audioFormatDescription: String = ""
     
     // MARK: - Noise Control State
     @Published var noiseMode: NoiseMode = .custom
@@ -91,6 +94,7 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
     private var eqDebounceTimer: Timer?
     private var batteryPollTimer: Timer?
     private var autoReconnectTimer: Timer?
+    private var audioFormatTimer: Timer?
     
     override init() {
         super.init()
@@ -122,6 +126,7 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
             registerNotifications()
             readInitialState()
             startPeriodicBatteryPoll()
+            startAudioFormatMonitor()
         } else {
             DispatchQueue.main.async {
                 self.isConnecting = false
@@ -149,6 +154,8 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
             self.isConnected = false
             self.batteryLevel = nil
             self.batteryPollTimer?.invalidate()
+            self.audioFormatTimer?.invalidate()
+            self.audioFormatDescription = ""
         }
     }
     
@@ -440,6 +447,77 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
             guard let self = self, self.isConnected else { return }
             self.send(command: 0x0603)
         }
+    }
+    
+    // MARK: - Audio Format (CoreAudio)
+    private func startAudioFormatMonitor() {
+        DispatchQueue.main.async {
+            self.audioFormatTimer?.invalidate()
+            self.refreshAudioFormat()
+            self.audioFormatTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+                self?.refreshAudioFormat()
+            }
+        }
+    }
+    
+    private func refreshAudioFormat() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let text = BluetoothManager.readHeadsetSampleRate() ?? ""
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                let final = self.isConnected ? text : ""
+                if self.audioFormatDescription != final { self.audioFormatDescription = final }
+            }
+        }
+    }
+    
+    private static func readHeadsetSampleRate() -> String? {
+        let system = AudioObjectID(kAudioObjectSystemObject)
+        var devicesAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(system, &devicesAddr, 0, nil, &size) == noErr, size > 0 else { return nil }
+        let count = Int(size) / MemoryLayout<AudioDeviceID>.size
+        var ids = [AudioDeviceID](repeating: 0, count: count)
+        guard AudioObjectGetPropertyData(system, &devicesAddr, 0, nil, &size, &ids) == noErr else { return nil }
+        
+        for id in ids {
+            // Name must match the headset
+            var nameAddr = AudioObjectPropertyAddress(
+                mSelector: kAudioObjectPropertyName,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain)
+            var cfName: Unmanaged<CFString>?
+            var nameSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+            guard AudioObjectGetPropertyData(id, &nameAddr, 0, nil, &nameSize, &cfName) == noErr,
+                  let cf = cfName?.takeRetainedValue() else { continue }
+            let name = cf as String
+            guard name.localizedCaseInsensitiveContains("ACCENTUM") else { continue }
+            
+            // Must expose output streams (skip the mic-only side)
+            var streamsAddr = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyStreams,
+                mScope: kAudioObjectPropertyScopeOutput,
+                mElement: kAudioObjectPropertyElementMain)
+            var streamsSize: UInt32 = 0
+            guard AudioObjectGetPropertyDataSize(id, &streamsAddr, 0, nil, &streamsSize) == noErr, streamsSize > 0 else { continue }
+            
+            var rate: Float64 = 0
+            var rateSize = UInt32(MemoryLayout<Float64>.size)
+            var rateAddr = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyNominalSampleRate,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain)
+            guard AudioObjectGetPropertyData(id, &rateAddr, 0, nil, &rateSize, &rate) == noErr, rate > 0 else { continue }
+            
+            let khz = rate / 1000.0
+            return khz.truncatingRemainder(dividingBy: 1) == 0
+                ? String(format: "%.0f kHz", khz)
+                : String(format: "%.1f kHz", khz)
+        }
+        return nil
     }
     
     // MARK: - Frame Decoder
