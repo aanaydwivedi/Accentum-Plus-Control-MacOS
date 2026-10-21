@@ -12,6 +12,7 @@
 		B5591A9C3088CFBC007D970E /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5591A9B3088CFBB007D970E /* ContentView.swift */; };
 		B5591A9E3088CFCD007D970E /* HeadsetViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5591A9D3088CFCD007D970E /* HeadsetViews.swift */; };
 		B5591AA03088D419007D970E /* MyAppApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5591A9F3088D419007D970E /* MyAppApp.swift */; };
+		B5591AA83089038C007D970E /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5591AA73089038C007D970E /* MenuBarView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -21,6 +22,7 @@
 		B5591A9B3088CFBB007D970E /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		B5591A9D3088CFCD007D970E /* HeadsetViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeadsetViews.swift; sourceTree = "<group>"; };
 		B5591A9F3088D419007D970E /* MyAppApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MyAppApp.swift; sourceTree = "<group>"; };
+		B5591AA73089038C007D970E /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -47,6 +49,7 @@
 				B5591A973088CF94007D970E /* GaiaProtocol.swift */,
 				B5591A993088CFB2007D970E /* BluetoothManager.swift */,
 				B5591A9B3088CFBB007D970E /* ContentView.swift */,
+				B5591AA73089038C007D970E /* MenuBarView.swift */,
 				B5591A9D3088CFCD007D970E /* HeadsetViews.swift */,
 				B5591A9F3088D419007D970E /* MyAppApp.swift */,
 				000000000000000000000020 /* Products */,
@@ -131,6 +134,7 @@
 				B5591A9E3088CFCD007D970E /* HeadsetViews.swift in Sources */,
 				B5591AA03088D419007D970E /* MyAppApp.swift in Sources */,
 				B5591A983088CF9C007D970E /* GaiaProtocol.swift in Sources */,
+				B5591AA83089038C007D970E /* MenuBarView.swift in Sources */,
 				B5591A9C3088CFBC007D970E /* ContentView.swift in Sources */,
 				B5591A9A3088CFB2007D970E /* BluetoothManager.swift in Sources */,
 			);

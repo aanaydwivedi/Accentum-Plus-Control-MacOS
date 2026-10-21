@@ -51,33 +51,11 @@ struct VerticalEqSlider: View {
                             let clampedY = max(0, min(height, value.location.y))
                             let fraction = Double(1.0 - (clampedY / height))
                             let unrounded = range.lowerBound + fraction * (range.upperBound - range.lowerBound)
-                            
-                            var targetValue = (round(unrounded * 2.0) / 2.0) // 0.5 dB step
-                            
-                            // Magnetic snap to 0.0 center
-                            if abs(unrounded) <= 0.4 {
-                                targetValue = 0.0
-                            }
-                            
-                            let previousValue = gain
-                            
-                            if previousValue != targetValue {
-                                if targetValue == 0.0 && previousValue != 0.0 {
-                                    // Centering snap haptic
-                                    NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .default)
-                                } else {
-                                    // Tick haptic
-                                    NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .default)
-                                }
-                                gain = targetValue
-                            }
+                            gain = (round(unrounded * 2.0) / 2.0) // 0.5 dB step
                         }
                 )
                 .onTapGesture(count: 2) {
-                    if gain != 0.0 {
-                        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .default)
-                        gain = 0.0 // Double click resets to 0 dB
-                    }
+                    gain = 0.0 // Double click resets to 0 dB
                 }
             }
             .frame(width: 34, height: 140)
@@ -121,7 +99,7 @@ struct NoiseControlView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(btManager.deviceName)
                             .font(.headline)
-                        Text(btManager.isConnected ? "Connected • \(btManager.audioFormatDescription.isEmpty ? "Bluetooth Classic" : btManager.audioFormatDescription)" : "Disconnected")
+                        Text(btManager.isConnected ? "Connected • Bluetooth Classic" : "Disconnected")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -279,7 +257,7 @@ struct NoiseControlView: View {
     }
 }
 
-// MARK: - 2. CONNECTION MANAGEMENT VIEW
+// MARK: - 2. CONNECTION MANAGEMENT VIEW (Image 2)
 struct ConnectionManagementView: View {
     @EnvironmentObject var btManager: BluetoothManager
     
@@ -383,7 +361,7 @@ struct ConnectionManagementView: View {
     }
 }
 
-// MARK: - 3. MY SOUND VIEW
+// MARK: - 3. MY SOUND VIEW (Exact Bands & Sync from Headphone)
 struct MySoundView: View {
     @EnvironmentObject var btManager: BluetoothManager
     @State private var showingSaveSheet = false
@@ -555,7 +533,7 @@ struct MySoundView: View {
     }
 }
 
-// MARK: - 4. BEHAVIOR VIEW
+// MARK: - 4. BEHAVIOR VIEW (100% Retained)
 struct BehaviorView: View {
     @EnvironmentObject var btManager: BluetoothManager
     

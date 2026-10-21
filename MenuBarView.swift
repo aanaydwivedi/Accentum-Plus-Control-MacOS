@@ -2,11 +2,8 @@ import SwiftUI
 
 struct MenuBarView: View {
     @EnvironmentObject var btManager: BluetoothManager
-    @State private var selectedTab: MenuBarTab = .noiseControl
-    
-    enum MenuBarTab: Hashable {
-        case noiseControl, mySound, connectionManagement, behavior
-    }
+    @State private var selectedTab: Int = 0
+    @State private var previousTab: Int = 0
     
     var body: some View {
         VStack(spacing: 0) {
@@ -34,62 +31,87 @@ struct MenuBarView: View {
                     }
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 14)
-            .padding(.bottom, 8)
+            .padding(.horizontal, 10)
+            .padding(.top, 12)
+            .padding(.bottom, 6)
             
             Divider()
                 .opacity(0.4)
             
-            // Main Content Area (Vertical & Compact)
+            // Custom Directional Slide Container (Slightly faster duration: 0.22s)
             ZStack {
                 if !btManager.isConnected {
                     MenuBarDisconnectedView()
                 } else {
-                    ScrollView {
-                        VStack(spacing: 12) {
-                            switch selectedTab {
-                            case .noiseControl:
-                                NoiseControlView()
-                            case .mySound:
-                                MySoundView()
-                            case .connectionManagement:
-                                ConnectionManagementView()
-                            case .behavior:
-                                BehaviorView()
-                            }
+                    GeometryReader { proxy in
+                        ZStack {
+                            pageView(for: 0)
+                                .offset(x: CGFloat(0 - selectedTab) * proxy.size.width)
+                            pageView(for: 1)
+                                .offset(x: CGFloat(1 - selectedTab) * proxy.size.width)
+                            pageView(for: 2)
+                                .offset(x: CGFloat(2 - selectedTab) * proxy.size.width)
+                            pageView(for: 3)
+                                .offset(x: CGFloat(3 - selectedTab) * proxy.size.width)
                         }
-                        .padding(12)
+                        .animation(.easeInOut(duration: 0.22), value: selectedTab)
                     }
+                    .clipped()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             
             // Bottom "Liquid Glass" Style Floating Navigation Bar
-            HStack(spacing: 12) {
-                MenuBarTabButton(icon: "earbuds", title: "Noise", isSelected: selectedTab == .noiseControl) {
-                    selectedTab = .noiseControl
+            HStack(spacing: 6) {
+                MenuBarTabButton(icon: "earbuds", title: "Noise", isSelected: selectedTab == 0) {
+                    switchToTab(0)
                 }
-                MenuBarTabButton(icon: "slider.vertical.3", title: "Sound", isSelected: selectedTab == .mySound) {
-                    selectedTab = .mySound
+                MenuBarTabButton(icon: "slider.vertical.3", title: "Sound", isSelected: selectedTab == 1) {
+                    switchToTab(1)
                 }
-                MenuBarTabButton(icon: "laptopcomputer.and.iphone", title: "Devices", isSelected: selectedTab == .connectionManagement) {
-                    selectedTab = .connectionManagement
+                MenuBarTabButton(icon: "laptopcomputer.and.iphone", title: "Devices", isSelected: selectedTab == 2) {
+                    switchToTab(2)
                 }
-                MenuBarTabButton(icon: "switch.2", title: "Behavior", isSelected: selectedTab == .behavior) {
-                    selectedTab = .behavior
+                MenuBarTabButton(icon: "switch.2", title: "Behavior", isSelected: selectedTab == 3) {
+                    switchToTab(3)
                 }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 6)
             .background(.ultraThinMaterial)
-            .cornerRadius(24)
-            .shadow(color: Color.black.opacity(0.15), radius: 8, x: 0, y: 4)
-            .padding(.horizontal, 14)
-            .padding(.bottom, 12)
-            .padding(.top, 6)
+            .cornerRadius(20)
+            .shadow(color: Color.black.opacity(0.15), radius: 6, x: 0, y: 3)
+            .padding(.horizontal, 10)
+            .padding(.bottom, 10)
+            .padding(.top, 4)
         }
-        .frame(width: 380, height: 500)
+        .frame(width: 340, height: 540)
+    }
+    
+    @ViewBuilder
+    private func pageView(for index: Int) -> some View {
+        ScrollView {
+            VStack(spacing: 8) {
+                switch index {
+                case 0: NoiseControlView()
+                case 1: MySoundView()
+                case 2: ConnectionManagementView()
+                case 3: BehaviorView()
+                default: EmptyView()
+                }
+            }
+            .padding(.horizontal, 4)
+            .padding(.vertical, 6)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+    
+    private func switchToTab(_ newIndex: Int) {
+        guard newIndex != selectedTab else { return }
+        previousTab = selectedTab
+        withAnimation(.easeInOut(duration: 0.22)) {
+            selectedTab = newIndex
+        }
     }
     
     private func batteryIcon(for level: Int) -> String {
@@ -117,17 +139,18 @@ struct MenuBarTabButton: View {
     
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 3) {
+            VStack(spacing: 2) {
                 Image(systemName: icon)
-                    .font(.system(size: 15, weight: isSelected ? .semibold : .regular))
+                    .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
                 Text(title)
                     .font(.system(size: 10, weight: isSelected ? .medium : .regular))
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 6)
-            .background(isSelected ? Color.accentColor.opacity(0.2) : Color.clear)
+            .background(isSelected ? Color.accentColor.opacity(0.25) : Color.clear)
             .foregroundColor(isSelected ? .accentColor : .secondary)
-            .cornerRadius(12)
+            .cornerRadius(10)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
@@ -150,6 +173,7 @@ struct MenuBarDisconnectedView: View {
                     .foregroundColor(.secondary)
                 Text("No ACCENTUM Plus")
                     .font(.headline)
+                    .foregroundColor(.primary)
                 Text("Turn on headphones or check macOS Bluetooth settings.")
                     .font(.caption)
                     .foregroundColor(.secondary)
