@@ -69,6 +69,15 @@ struct ContentView: View {
                                 .frame(width: 8, height: 8)
                             Text("Connected")
                                 .font(.system(size: 12, weight: .medium, design: .rounded))
+                            
+                            if !btManager.audioFormatDescription.isEmpty {
+                                Text("•")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.secondary)
+                                Text(btManager.audioFormatDescription)
+                                    .font(.system(size: 11, weight: .medium, design: .rounded).monospacedDigit())
+                                    .foregroundColor(.secondary)
+                            }
                         }
                     } else {
                         HStack(spacing: 6) {

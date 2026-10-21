@@ -2,6 +2,8 @@ import Foundation
 import IOBluetooth
 import Combine
 import SwiftUI
+import CoreAudio
+import AudioToolbox
 
 enum NoiseMode: String, CaseIterable, Identifiable {
     case adaptive = "Adaptive"
@@ -34,6 +36,7 @@ final class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChann
     @Published var isConnecting = false
     @Published var deviceName = "ACCENTUM Plus"
     @Published var batteryLevel: Int? = nil
+    @Published var audioFormatDescription: String = ""
     
     // MARK: - Noise Control State
     @Published var noiseMode: NoiseMode = .custom
@@ -89,8 +92,8 @@ final class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChann
         super.init()
         loadPresets()
         registerForSystemBluetoothNotifications()
+        registerAudioDeviceListener()
         
-        // Allow macOS runloop and bluetoothd to settle before first connection attempt
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             self?.connectToAccentumPlus()
             self?.startAutoReconnectMonitor()
@@ -145,13 +148,11 @@ final class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChann
                 self.deviceName = accentum.name ?? "ACCENTUM Plus"
             }
             
-            // If device baseband is not connected, open baseband connection first
             if !accentum.isConnected() {
                 accentum.openConnection()
             }
             
             var channel: IOBluetoothRFCOMMChannel?
-            // Channel 1 is Sennheiser GAIA RFCOMM channel
             let status = accentum.openRFCOMMChannelSync(&channel, withChannelID: 1, delegate: self)
             
             DispatchQueue.main.async {
@@ -162,6 +163,7 @@ final class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChann
                     self.registerNotifications()
                     self.readInitialState()
                     self.startPeriodicBatteryPoll()
+                    self.updateAudioFormatInfo()
                 } else {
                     self.rfcommChannel = nil
                     self.isConnected = false
@@ -173,7 +175,6 @@ final class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChann
     
     private func startAutoReconnectMonitor() {
         autoReconnectTimer?.invalidate()
-        // Checks every 5 seconds in background if disconnected
         autoReconnectTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             if !self.isConnected && !self.isConnecting {
@@ -197,6 +198,7 @@ final class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChann
             self.isConnected = false
             self.isConnecting = false
             self.batteryLevel = nil
+            self.audioFormatDescription = ""
             self.batteryPollTimer?.invalidate()
             self.rfcommChannel = nil
         }
@@ -243,7 +245,28 @@ final class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChann
     }
     
     func setSliderValue(_ value: Double) {
-        self.ancSliderValue = value
+        // Snap behavior: magnetically center at 50 (0 ANC & 0 Transparency)
+        var targetValue = value
+        if abs(value - 50.0) <= 2.0 {
+            targetValue = 50.0
+        }
+        
+        let previousValue = self.ancSliderValue
+        self.ancSliderValue = targetValue
+        
+        // Haptic feedback
+        let prevInt = Int(round(previousValue))
+        let newInt = Int(round(targetValue))
+        if prevInt != newInt {
+            if targetValue == 50.0 && previousValue != 50.0 {
+                // Centering snap feedback haptic
+                NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .default)
+            } else {
+                // Changing slider haptic feedback
+                NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .default)
+            }
+        }
+        
         if noiseMode != .custom {
             self.noiseMode = .custom
             send(command: 0x1A04, payload: [0x01])
@@ -253,7 +276,7 @@ final class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChann
         sliderDebounceTimer?.invalidate()
         sliderDebounceTimer = Timer.scheduledTimer(withTimeInterval: 0.04, repeats: false) { [weak self] _ in
             guard let self = self else { return }
-            let hardwareLevel = UInt8(clamping: Int(round(value)))
+            let hardwareLevel = UInt8(clamping: Int(round(targetValue)))
             self.send(command: 0x1A02, payload: [hardwareLevel])
         }
     }
@@ -441,6 +464,141 @@ final class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChann
         send(command: 0x0600, payload: [0x00, UInt8((seconds >> 8) & 0xFF), UInt8(seconds & 0xFF)])
     }
     
+    // MARK: - Codec, kHz & Wired Detection (CoreAudio)
+    private func registerAudioDeviceListener() {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: AudioObjectPropertyElement(kAudioObjectPropertyElementMain)
+        )
+        AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            DispatchQueue.global(qos: .utility)
+        ) { [weak self] _, _ in
+            self?.updateAudioFormatInfo()
+        }
+    }
+    
+    func updateAudioFormatInfo() {
+        var defaultOutputDeviceID = AudioDeviceID(0)
+        var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: AudioObjectPropertyElement(kAudioObjectPropertyElementMain)
+        )
+        
+        let status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            0,
+            nil,
+            &propertySize,
+            &defaultOutputDeviceID
+        )
+        
+        guard status == noErr, defaultOutputDeviceID != 0 else {
+            DispatchQueue.main.async {
+                self.audioFormatDescription = "AAC • 48 kHz"
+            }
+            return
+        }
+        
+        // Check all audio devices to inspect if Accentum Plus is plugged in via USB-C
+        var allDevsSize: UInt32 = 0
+        address.mSelector = kAudioHardwarePropertyDevices
+        AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &allDevsSize)
+        let count = Int(allDevsSize) / MemoryLayout<AudioDeviceID>.size
+        var devIDs = [AudioDeviceID](repeating: 0, count: count)
+        AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &allDevsSize, &devIDs)
+        
+        var targetDeviceID = defaultOutputDeviceID
+        var isUSBWire = false
+        
+        for devID in devIDs {
+            var nameCF: CFString = "" as CFString
+            var strSize = UInt32(MemoryLayout<CFString>.size)
+            var nameAddr = AudioObjectPropertyAddress(
+                mSelector: kAudioObjectPropertyName,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: AudioObjectPropertyElement(kAudioObjectPropertyElementMain)
+            )
+            if AudioObjectGetPropertyData(devID, &nameAddr, 0, nil, &strSize, &nameCF) == noErr {
+                let name = nameCF as String
+                if name.localizedCaseInsensitiveContains("ACCENTUM Plus") {
+                    var trans: UInt32 = 0
+                    var transSize = UInt32(MemoryLayout<UInt32>.size)
+                    var transAddr = AudioObjectPropertyAddress(
+                        mSelector: kAudioDevicePropertyTransportType,
+                        mScope: kAudioObjectPropertyScopeGlobal,
+                        mElement: AudioObjectPropertyElement(kAudioObjectPropertyElementMain)
+                    )
+                    if AudioObjectGetPropertyData(devID, &transAddr, 0, nil, &transSize, &trans) == noErr {
+                        if trans == kAudioDeviceTransportTypeUSB {
+                            targetDeviceID = devID
+                            isUSBWire = true
+                            break
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Query Name, Transport Type, and Nominal Sample Rate
+        var nameCF: CFString = "" as CFString
+        var strSize = UInt32(MemoryLayout<CFString>.size)
+        var nameAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioObjectPropertyName,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: AudioObjectPropertyElement(kAudioObjectPropertyElementMain)
+        )
+        _ = AudioObjectGetPropertyData(targetDeviceID, &nameAddr, 0, nil, &strSize, &nameCF)
+        let matchedName = nameCF as String
+        
+        var trans: UInt32 = 0
+        var transSize = UInt32(MemoryLayout<UInt32>.size)
+        var transAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: AudioObjectPropertyElement(kAudioObjectPropertyElementMain)
+        )
+        _ = AudioObjectGetPropertyData(targetDeviceID, &transAddr, 0, nil, &transSize, &trans)
+        
+        var sampleRate: Float64 = 48000.0
+        var srSize = UInt32(MemoryLayout<Float64>.size)
+        var srAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: AudioObjectPropertyElement(kAudioObjectPropertyElementMain)
+        )
+        _ = AudioObjectGetPropertyData(targetDeviceID, &srAddr, 0, nil, &srSize, &sampleRate)
+        
+        let khzStr: String
+        if sampleRate > 0 {
+            if sampleRate.truncatingRemainder(dividingBy: 1000) == 0 {
+                khzStr = "\(Int(sampleRate / 1000)) kHz"
+            } else {
+                khzStr = String(format: "%.1f kHz", sampleRate / 1000.0)
+            }
+        } else {
+            khzStr = "48 kHz"
+        }
+        
+        let formatDesc: String
+        if isUSBWire || trans == kAudioDeviceTransportTypeUSB {
+            formatDesc = "Wired (USB-C) • \(khzStr)"
+        } else if matchedName.localizedCaseInsensitiveContains("Headphone") || trans == kAudioDeviceTransportTypeBuiltIn {
+            formatDesc = "Wired (AUX) • \(khzStr)"
+        } else {
+            formatDesc = "AAC • \(khzStr)"
+        }
+        
+        DispatchQueue.main.async {
+            self.audioFormatDescription = formatDesc
+        }
+    }
+    
     // MARK: - Initialization Queries
     private func registerNotifications() {
         let notificationIds: [UInt8] = [0x03, 0x0D, 0x0C, 0x08, 0x0A, 0x0B, 0x04, 0x02]
@@ -484,6 +642,7 @@ final class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChann
         batteryPollTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
             guard let self = self, self.isConnected else { return }
             self.send(command: 0x0603)
+            self.updateAudioFormatInfo()
         }
     }
     
