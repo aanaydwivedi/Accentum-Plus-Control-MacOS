@@ -47,42 +47,46 @@ struct ContentView: View {
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                // Integrated native toolbar pill without overlapping inner borders
+                // Generously padded native toolbar pill
                 HStack(spacing: 8) {
                     if btManager.isConnected {
                         if let battery = btManager.batteryLevel {
                             HStack(spacing: 4) {
                                 Image(systemName: batteryIcon(for: battery))
                                     .foregroundColor(batteryColor(for: battery))
+                                    .imageScale(.medium)
                                 Text("\(battery)%")
-                                    .font(.system(.body, design: .rounded).monospacedDigit())
+                                    .font(.system(size: 12, weight: .medium, design: .rounded).monospacedDigit())
                             }
                             
                             Divider()
                                 .frame(height: 12)
+                                .opacity(0.4)
                         }
                         
-                        HStack(spacing: 5) {
+                        HStack(spacing: 6) {
                             Circle()
                                 .fill(Color.green)
                                 .frame(width: 8, height: 8)
                             Text("Connected")
-                                .font(.system(.body, design: .rounded))
+                                .font(.system(size: 12, weight: .medium, design: .rounded))
                         }
                     } else {
-                        HStack(spacing: 5) {
+                        HStack(spacing: 6) {
                             Circle()
                                 .fill(Color.secondary)
                                 .frame(width: 8, height: 8)
                             Text("Disconnected")
-                                .font(.system(.body, design: .rounded))
+                                .font(.system(size: 12, weight: .medium, design: .rounded))
                                 .foregroundColor(.secondary)
                         }
                     }
                 }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 5)
             }
         }
-        .frame(minWidth: 680, minHeight: 520)
+        .frame(minWidth: 700, minHeight: 520)
     }
     
     private func batteryIcon(for level: Int) -> String {

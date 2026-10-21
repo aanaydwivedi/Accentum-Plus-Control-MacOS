@@ -1,5 +1,72 @@
 import SwiftUI
 
+// MARK: - VERTICAL EQ SLIDER COMPONENT
+struct VerticalEqSlider: View {
+    let label: String
+    @Binding var gain: Double
+    let range: ClosedRange<Double> = -6.0...6.0
+    
+    var body: some View {
+        VStack(spacing: 8) {
+            Text("\(gain >= 0 ? "+" : "")\(String(format: "%.1f", gain))")
+                .font(.system(size: 11, weight: .medium, design: .rounded).monospacedDigit())
+                .foregroundColor(gain == 0 ? .secondary : .accentColor)
+            
+            GeometryReader { geo in
+                let height = geo.size.height
+                let midY = height / 2.0
+                let normalized = CGFloat((gain - range.lowerBound) / (range.upperBound - range.lowerBound))
+                let thumbY = height - (normalized * height)
+                
+                ZStack(alignment: .top) {
+                    // Track
+                    Capsule()
+                        .fill(Color(NSColor.separatorColor).opacity(0.3))
+                        .frame(width: 5)
+                    
+                    // Zero dB center tick
+                    Rectangle()
+                        .fill(Color.secondary.opacity(0.5))
+                        .frame(width: 14, height: 1.5)
+                        .position(x: geo.size.width / 2, y: midY)
+                    
+                    // Active Fill from 0 dB to thumb
+                    Capsule()
+                        .fill(Color.accentColor)
+                        .frame(width: 5, height: abs(thumbY - midY))
+                        .position(x: geo.size.width / 2, y: min(thumbY, midY) + abs(thumbY - midY) / 2)
+                    
+                    // Draggable Knob
+                    Circle()
+                        .fill(Color.white)
+                        .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
+                        .frame(width: 18, height: 18)
+                        .position(x: geo.size.width / 2, y: thumbY)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            let clampedY = max(0, min(height, value.location.y))
+                            let fraction = Double(1.0 - (clampedY / height))
+                            let unrounded = range.lowerBound + fraction * (range.upperBound - range.lowerBound)
+                            gain = (round(unrounded * 2.0) / 2.0) // Step 0.5 dB
+                        }
+                )
+                .onTapGesture(count: 2) {
+                    gain = 0.0 // Double click resets to 0 dB
+                }
+            }
+            .frame(width: 34, height: 140)
+            
+            Text(label)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.secondary)
+        }
+    }
+}
+
 // MARK: - 1. NOISE CONTROL VIEW
 struct NoiseControlView: View {
     @EnvironmentObject var btManager: BluetoothManager
@@ -25,7 +92,6 @@ struct NoiseControlView: View {
     var body: some View {
         Form {
             Section {
-                // Hero Device Card (No duplicate battery)
                 HStack(spacing: 14) {
                     Image(systemName: "headphones")
                         .font(.system(size: 34))
@@ -43,7 +109,6 @@ struct NoiseControlView: View {
             }
             
             Section {
-                // Mode Selector: Adaptive | Custom | Off
                 Picker("Noise Control", selection: Binding(
                     get: { btManager.noiseMode },
                     set: { newMode in btManager.setNoiseMode(newMode) }
@@ -78,13 +143,13 @@ struct NoiseControlView: View {
                     HStack(spacing: 8) {
                         Image(systemName: "waveform.path")
                             .foregroundColor(.accentColor)
-                        Text("Adaptive noise cancellation is automatically adapting to your surroundings.")
+                        Text("Adaptive noise cancellation automatically adapts to your surroundings.")
                             .font(.subheadline)
                             .foregroundColor(.secondary)
                     }
                     .padding(.vertical, 4)
                 } else {
-                    Text("Noise cancellation and transparency are off.")
+                    Text("Noise cancellation and transparency are disabled.")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                         .padding(.vertical, 4)
@@ -93,7 +158,7 @@ struct NoiseControlView: View {
                 Text("Noise Control")
             }
             
-            // Anti-Wind Settings (Images 3 & 4)
+            // Anti-Wind Settings (Auto / Max)
             if btManager.noiseMode != .off {
                 Section {
                     Toggle(isOn: Binding(
@@ -129,7 +194,7 @@ struct NoiseControlView: View {
                 }
             }
             
-            // Phone Calls (Sidetone) (Image 4)
+            // Phone Calls (Sidetone)
             Section {
                 Toggle(isOn: Binding(
                     get: { btManager.isPhoneCallTransparencyOn },
@@ -165,7 +230,7 @@ struct NoiseControlView: View {
                 Text("Call Transparency")
             }
             
-            // Auto-pause (Image 4)
+            // Auto-pause
             Section {
                 Toggle(isOn: Binding(
                     get: { btManager.isAutoPauseTransparencyOn },
@@ -220,10 +285,8 @@ struct ConnectionManagementView: View {
             Section {
                 if btManager.pairedDevices.isEmpty {
                     HStack {
-                        ProgressView()
-                            .scaleEffect(0.8)
-                        Text("Reading paired devices...")
-                            .foregroundColor(.secondary)
+                        ProgressView().scaleEffect(0.8)
+                        Text("Reading paired devices...").foregroundColor(.secondary)
                     }
                 } else {
                     ForEach(btManager.pairedDevices) { device in
@@ -287,17 +350,17 @@ struct ConnectionManagementView: View {
     }
 }
 
-// MARK: - 3. MY SOUND & GRAPHIC EQ VIEW (Image 5)
+// MARK: - 3. MY SOUND VIEW (Vertical Sliders & Exact Bands)
 struct MySoundView: View {
     @EnvironmentObject var btManager: BluetoothManager
     @State private var showingSaveSheet = false
     @State private var newPresetName = ""
     
-    let frequencies = ["63 Hz", "250 Hz", "1 kHz", "4 kHz", "8 kHz"]
+    // User requested exact bands: 50, 250, 800, 3k, 8k
+    let bandLabels = ["50 Hz", "250 Hz", "800 Hz", "3 kHz", "8 kHz"]
     
     var body: some View {
         Form {
-            // Section 1: Graphic EQ & Presets
             Section {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
@@ -310,15 +373,28 @@ struct MySoundView: View {
                     Spacer()
                     
                     Menu {
-                        Section("Built-in Presets") {
-                            ForEach(btManager.customPresets) { preset in
+                        Section("Default Presets") {
+                            ForEach(btManager.defaultPresets) { preset in
                                 Button(preset.name) {
                                     btManager.applyPreset(preset)
                                 }
                             }
                         }
+                        
+                        if !btManager.customPresets.isEmpty {
+                            Section("My Presets") {
+                                ForEach(btManager.customPresets) { preset in
+                                    HStack {
+                                        Button(preset.name) {
+                                            btManager.applyPreset(preset)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
                         Section {
-                            Button("Save Current Curve...") {
+                            Button("Save Current Curve as New Preset...") {
                                 newPresetName = ""
                                 showingSaveSheet = true
                             }
@@ -330,27 +406,19 @@ struct MySoundView: View {
                 }
                 .padding(.vertical, 2)
                 
-                // 5 Vertical Sliders
+                // Vertical 5-Band Sliders
                 HStack(spacing: 24) {
                     ForEach(0..<5) { index in
-                        VStack(spacing: 8) {
-                            Text("\(btManager.eqGains[index] >= 0 ? "+" : "")\(String(format: "%.1f", btManager.eqGains[index]))")
-                                .font(.caption2.monospacedDigit())
-                                .foregroundColor(.secondary)
-                            
-                            Slider(value: Binding(
+                        VerticalEqSlider(
+                            label: bandLabels[index],
+                            gain: Binding(
                                 get: { btManager.eqGains[index] },
                                 set: { val in btManager.setEqBand(index: index, gain: val) }
-                            ), in: -6.0...6.0, step: 0.5)
-                            .frame(height: 120)
-                            
-                            Text(frequencies[index])
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
+                            )
+                        )
                     }
                 }
-                .padding(.vertical, 8)
+                .padding(.vertical, 12)
                 .frame(maxWidth: .infinity, alignment: .center)
                 
                 Toggle("Bass boost", isOn: Binding(
@@ -362,7 +430,6 @@ struct MySoundView: View {
                 Text("Equalizer")
             }
             
-            // Section 2: Speech Clarity
             Section {
                 Toggle(isOn: Binding(
                     get: { btManager.isSpeechClarityOn },
@@ -381,7 +448,6 @@ struct MySoundView: View {
                 Text("Clarity")
             }
             
-            // Section 3: Sound Personalization (Visual Card from Image 5)
             Section {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
@@ -401,19 +467,19 @@ struct MySoundView: View {
                         .labelsHidden()
                     }
                     
-                    // Wave graphic visualization
+                    // Wave graphic matching Image 5
                     HStack(alignment: .bottom, spacing: 4) {
-                        ForEach(0..<30) { bar in
-                            RoundedRectangle(cornerRadius: 2)
+                        ForEach(0..<32) { bar in
+                            RoundedRectangle(cornerRadius: 1.5)
                                 .fill(LinearGradient(colors: [.accentColor.opacity(0.8), .cyan], startPoint: .bottom, endPoint: .top))
                                 .frame(width: 4, height: waveHeight(for: bar))
                         }
                     }
-                    .frame(height: 50)
+                    .frame(height: 52)
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.vertical, 4)
                     
-                    Text("Sound Personalization uses an algorithm to create a unique sound profile tuned to your hearing preferences.")
+                    Text("Sound Personalization uses an algorithm to create a unique sound profile to your unique listening preferences.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -426,15 +492,15 @@ struct MySoundView: View {
         .navigationTitle("My Sound")
         .sheet(isPresented: $showingSaveSheet) {
             VStack(spacing: 16) {
-                Text("Save Preset").font(.headline)
-                TextField("Preset Name", text: $newPresetName)
+                Text("New Preset").font(.headline)
+                TextField("Preset Name (e.g. Acoustic, Hip Hop)", text: $newPresetName)
                     .textFieldStyle(.roundedBorder)
                 HStack {
                     Button("Cancel") { showingSaveSheet = false }
                     Spacer()
                     Button("Save") {
-                        if !newPresetName.isEmpty {
-                            btManager.saveCustomPreset(name: newPresetName)
+                        if !newPresetName.trimmingCharacters(in: .whitespaces).isEmpty {
+                            btManager.saveCustomPreset(name: newPresetName.trimmingCharacters(in: .whitespaces))
                             showingSaveSheet = false
                         }
                     }
@@ -442,15 +508,15 @@ struct MySoundView: View {
                 }
             }
             .padding()
-            .frame(width: 280)
+            .frame(width: 320)
         }
     }
     
     private func waveHeight(for index: Int) -> CGFloat {
-        let center = 15.0
+        let center = 16.0
         let dist = abs(Double(index) - center)
-        let normalized = max(0.2, 1.0 - (dist / 15.0))
-        return CGFloat(10 + sin(Double(index) * 0.5) * 8 + normalized * 30)
+        let normalized = max(0.15, 1.0 - (dist / 16.0))
+        return CGFloat(10 + sin(Double(index) * 0.45) * 8 + normalized * 32)
     }
 }
 

@@ -53,7 +53,7 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
     @Published var isBassBoostOn: Bool = false
     @Published var isSpeechClarityOn: Bool = false
     @Published var isSoundPersonalizationOn: Bool = false
-    @Published var customPresets: [EqPresetItem] = [
+    @Published var defaultPresets: [EqPresetItem] = [
         EqPresetItem(name: "Wide Airy", gains: [1.5, 0.5, 0.0, 2.0, 3.5]),
         EqPresetItem(name: "Rock", gains: [3.0, 1.0, -1.0, 1.5, 3.5]),
         EqPresetItem(name: "Pop", gains: [-1.0, 1.0, 2.5, 1.5, -0.5]),
@@ -61,6 +61,7 @@ class BluetoothManager: NSObject, ObservableObject, IOBluetoothRFCOMMChannelDele
         EqPresetItem(name: "Flat", gains: [0.0, 0.0, 0.0, 0.0, 0.0]),
         EqPresetItem(name: "Movie", gains: [4.0, 1.5, 0.0, 1.0, 0.0])
     ]
+    @Published var customPresets: [EqPresetItem] = []
     
     // MARK: - Behavior State
     @Published var isSmartPauseOn: Bool = true
