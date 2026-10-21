@@ -37,22 +37,24 @@ struct ContentView: View {
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                // Integrated single-layer status pill matching macOS HIG
+                // Single unified macOS toolbar pill without overlapping inner borders
                 HStack(spacing: 8) {
                     if btManager.isConnected {
-                        // Battery indicator
-                        HStack(spacing: 4) {
-                            Image(systemName: batteryIcon(for: btManager.batteryLevel ?? 100))
-                                .foregroundColor(batteryColor(for: btManager.batteryLevel ?? 100))
-                            Text(btManager.batteryLevel != nil ? "\(btManager.batteryLevel!)%" : "--%")
-                                .font(.system(.body, design: .rounded).monospacedDigit())
-                                .foregroundColor(.primary)
+                        // Live Battery Indicator
+                        if let battery = btManager.batteryLevel {
+                            HStack(spacing: 4) {
+                                Image(systemName: batteryIcon(for: battery))
+                                    .foregroundColor(batteryColor(for: battery))
+                                Text("\(battery)%")
+                                    .font(.system(.body, design: .rounded).monospacedDigit())
+                                    .foregroundColor(.primary)
+                            }
+                            
+                            Divider()
+                                .frame(height: 12)
                         }
                         
-                        Divider()
-                            .frame(height: 12)
-                        
-                        // Status indicator
+                        // Status Indicator
                         HStack(spacing: 5) {
                             Circle()
                                 .fill(Color.green)
@@ -72,25 +74,32 @@ struct ContentView: View {
                         }
                     }
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
             }
         }
-        .frame(minWidth: 620, minHeight: 460)
+        .frame(minWidth: 620, minHeight: 480)
     }
     
+    // Correlates battery percentage with SF Symbols levels
     private func batteryIcon(for level: Int) -> String {
         switch level {
-        case 0..<20: return "battery.0percent"
-        case 20..<50: return "battery.25percent"
-        case 50..<80: return "battery.50percent"
-        default: return "battery.100percent"
+        case ..<15:
+            return "battery.0percent"
+        case 15..<38:
+            return "battery.25percent"
+        case 38..<63:
+            return "battery.50percent"
+        case 63..<88:
+            return "battery.75percent"
+        default:
+            return "battery.100percent"
         }
     }
     
     private func batteryColor(for level: Int) -> Color {
         if level <= 20 { return .red }
-        if level <= 40 { return .orange }
+        if level <= 45 { return .orange }
         return .green
     }
 }

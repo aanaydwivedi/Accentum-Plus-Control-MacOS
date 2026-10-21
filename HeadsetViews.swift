@@ -3,10 +3,29 @@ import SwiftUI
 struct NoiseControlView: View {
     @EnvironmentObject var btManager: BluetoothManager
     
+    // Exact text scaling matching the official Sennheiser app
+    private var leftLabel: String {
+        if btManager.ancSliderValue <= 50 {
+            let percent = Int(round((50.0 - btManager.ancSliderValue) * 2.0))
+            return "ANC \(percent)%"
+        } else {
+            return "ANC 0%"
+        }
+    }
+    
+    private var rightLabel: String {
+        if btManager.ancSliderValue >= 50 {
+            let percent = Int(round((btManager.ancSliderValue - 50.0) * 2.0))
+            return "\(percent)% Transparency"
+        } else {
+            return "0% Transparency"
+        }
+    }
+    
     var body: some View {
         Form {
             Section {
-                // Device Header Card
+                // Device Header Card (Redundant battery display removed)
                 HStack(spacing: 14) {
                     Image(systemName: "headphones")
                         .font(.system(size: 34))
@@ -19,97 +38,92 @@ struct NoiseControlView: View {
                             .foregroundColor(.secondary)
                     }
                     Spacer()
-                    if let battery = btManager.batteryLevel {
-                        HStack(spacing: 4) {
-                            Image(systemName: "battery.100percent")
-                                .foregroundColor(.green)
-                            Text("\(battery)%")
-                                .font(.headline.monospacedDigit())
-                        }
-                    }
                 }
                 .padding(.vertical, 4)
             }
             
             Section {
-                // Segmented Mode Selector
-                Picker("Noise Mode", selection: Binding(
+                // Official Modes: Adaptive | Custom | Off
+                Picker("Noise Control", selection: Binding(
                     get: { btManager.noiseMode },
                     set: { newMode in btManager.setNoiseMode(newMode) }
                 )) {
-                    Text("ANC").tag(NoiseMode.anc)
                     Text("Adaptive").tag(NoiseMode.adaptive)
-                    Text("Transparency").tag(NoiseMode.transparency)
+                    Text("Custom").tag(NoiseMode.custom)
                     Text("Off").tag(NoiseMode.off)
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 
-                // Toggle switch
-                Toggle("Transparent Hearing", isOn: Binding(
-                    get: { btManager.isTransparencyOn },
-                    set: { val in btManager.toggleTransparency(val) }
-                ))
-                .toggleStyle(.switch)
-            } header: {
-                Text("Modes")
-            }
-            
-            // Slider 1: Ambient Sound Control (when Transparency is ON)
-            if btManager.isTransparencyOn {
-                Section {
-                    VStack(alignment: .leading, spacing: 8) {
+                if btManager.noiseMode == .custom {
+                    VStack(spacing: 12) {
+                        // Dynamic labels matching Sennheiser Smart Control
                         HStack {
-                            Text("Ambient Sound Level")
+                            Text(leftLabel)
+                                .font(.subheadline.weight(btManager.ancSliderValue < 50 ? .semibold : .regular))
+                                .foregroundColor(btManager.ancSliderValue < 50 ? .primary : .secondary)
                             Spacer()
-                            Text("\(Int(btManager.transparencyLevel))%")
-                                .font(.callout.monospacedDigit())
-                                .foregroundColor(.secondary)
+                            Text(rightLabel)
+                                .font(.subheadline.weight(btManager.ancSliderValue > 50 ? .semibold : .regular))
+                                .foregroundColor(btManager.ancSliderValue > 50 ? .primary : .secondary)
                         }
-                        HStack {
-                            Image(systemName: "speaker.wave.1.fill")
-                                .foregroundColor(.secondary)
+                        
+                        // Unified Blend Slider (0 to 100 with Center Notch at 50)
+                        ZStack {
+                            Rectangle()
+                                .fill(Color.secondary.opacity(0.4))
+                                .frame(width: 1.5, height: 16)
+                            
                             Slider(value: Binding(
-                                get: { btManager.transparencyLevel },
-                                set: { val in btManager.setTransparencyLevel(Int(val)) }
+                                get: { btManager.ancSliderValue },
+                                set: { val in btManager.setSliderValue(val) }
                             ), in: 0...100, step: 1)
-                            Image(systemName: "speaker.wave.3.fill")
-                                .foregroundColor(.secondary)
                         }
                     }
+                    .padding(.vertical, 6)
+                } else if btManager.noiseMode == .adaptive {
+                    HStack(spacing: 8) {
+                        Image(systemName: "waveform.path")
+                            .foregroundColor(.accentColor)
+                        Text("Adaptive noise cancellation is automatically adapting to your environment.")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
                     .padding(.vertical, 4)
-                } header: {
-                    Text("Ambient Sound Control")
-                } footer: {
-                    Text("Controls the volume of voices and environmental sounds passed into the headphones.")
+                } else {
+                    Text("Noise cancellation and transparency are disabled.")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .padding(.vertical, 4)
+                }
+            } header: {
+                Text("Noise Control")
+            } footer: {
+                if btManager.noiseMode == .custom {
+                    Text("Center is neutral. Slide left for active noise cancellation, or right for transparency.")
                 }
             }
             
-            // Slider 2: Active Noise Cancellation (when in manual ANC mode)
-            if btManager.noiseMode == .anc && !btManager.isTransparencyOn {
+            // Anti-Wind Toggle
+            if btManager.noiseMode != .off {
                 Section {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("Noise Cancellation Strength")
-                            Spacer()
-                            Text("\(Int(btManager.ancStrength))%")
-                                .font(.callout.monospacedDigit())
+                    Toggle(isOn: Binding(
+                        get: { btManager.isAntiWindOn },
+                        set: { val in btManager.setAntiWind(val) }
+                    )) {
+                        HStack(spacing: 10) {
+                            Image(systemName: "wind")
+                                .font(.system(size: 18))
                                 .foregroundColor(.secondary)
-                        }
-                        HStack {
-                            Text("Min").font(.caption).foregroundColor(.secondary)
-                            Slider(value: Binding(
-                                get: { btManager.ancStrength },
-                                set: { val in btManager.setAncStrength(Int(val)) }
-                            ), in: 0...100, step: 1)
-                            Text("Max").font(.caption).foregroundColor(.secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Anti-wind")
+                                Text("Reduce wind noise in ANC.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
                         }
                     }
-                    .padding(.vertical, 4)
-                } header: {
-                    Text("Cancellation Strength")
-                } footer: {
-                    Text("Adjusts the intensity of active background noise suppression.")
+                    .toggleStyle(.switch)
                 }
             }
         }
